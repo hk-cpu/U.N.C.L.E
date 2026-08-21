@@ -13,8 +13,46 @@ WiFi ELM327 clone — and ships with a simulated car so you can try every comman
 before you go near the driveway.
 
 ```
-cardiag --sim --profile faulty scan
+cardiag --sim --sim-profile charger-misfire scan
 ```
+
+### Vehicle profiles
+
+Generic OBD-II tells you "cylinder 4 is misfiring". A profile turns that into
+something you can act on. cardiag ships with one for the **2006 Dodge Charger
+R/T (5.7 L HEMI V8)**, detected automatically from the car's VIN:
+
+```
+  ! P0304 - Cylinder 4 misfire detected
+     On your engine, cylinder 4 is on bank 2, the passenger's (right) side,
+     and has 2 spark plugs. It is also one of the cylinders MDS shuts down
+     at cruise.
+
+  ! Known issue on this model: MDS lifter or camshaft lobe failure
+     Raised by P0300, P0304. The lifters for the four MDS cylinders
+     (1, 4, 6, 7) can collapse or spall, taking the camshaft lobe with them...
+     How to check: (1) Note which cylinder is missing - is it one of
+     1, 4, 6, 7? (2) Swap the coil with a neighbouring cylinder and clear the
+     code. If the misfire stays on the same cylinder, it is not ignition...
+```
+
+The profile knows the engine's bank layout and Chrysler's cylinder numbering,
+that the HEMI has 16 plugs, which cylinders MDS deactivates, that the engine
+runs hotter than a generic threshold would allow for, and the failures this
+model is known for — MDS lifters, exhaust manifold bolts (which show up as a
+*lean* code, not an exhaust one), the oil pressure sender, and the two separate
+catalysts.
+
+```bash
+cardiag vehicle                    # what cardiag knows about your car
+cardiag vin                        # decode the VIN, with check-digit validation
+cardiag --vehicle charger lookup P0304   # model-specific code explanation
+cardiag --vehicle none scan        # opt out, stay generic
+```
+
+Profiles are applied automatically when the VIN matches, so on your own car you
+never need the flag. `--vehicle` is there for cars that do not report a VIN
+(common before roughly 2005).
 
 ### What it does
 
@@ -81,6 +119,8 @@ things. For live data, have the engine running.
 | `cardiag scan` | Full health check with findings (the default) |
 | `cardiag codes` | Trouble codes with likely causes |
 | `cardiag lookup P0420` | Explain a code — works offline, no car needed |
+| `cardiag vehicle` | What cardiag knows about your model |
+| `cardiag vin` | Decode and validate the VIN |
 | `cardiag live` | Live dashboard |
 | `cardiag live --log drive.csv` | Dashboard plus recording |
 | `cardiag monitors` | Emissions readiness monitors |
@@ -100,14 +140,21 @@ cardiag --json scan > "health-$(date +%F).json" || notify-send "Car needs attent
 
 ### Trying it without a car
 
-Three simulated vehicles are built in:
+Five simulated vehicles are built in:
 
 ```bash
-cardiag --sim scan                        # healthy car
-cardiag --sim --profile faulty scan       # check-engine light, three codes
-cardiag --sim --profile emissions monitors  # codes recently cleared
-cardiag --sim live                        # dashboard on a simulated drive cycle
+cardiag --sim scan                              # healthy car
+cardiag --sim --sim-profile faulty scan         # check-engine light, three codes
+cardiag --sim --sim-profile emissions monitors  # codes recently cleared
+cardiag --sim --sim-profile charger scan        # healthy 2006 Charger R/T
+cardiag --sim --sim-profile charger-misfire scan  # Charger, MDS-cylinder misfire
+cardiag --sim live                              # dashboard on a simulated drive
 ```
+
+The two `charger` profiles present a V8 with both banks reporting, a valid 2006
+R/T VIN, and — on `charger-misfire` — a cylinder 4 misfire with bank 2 running
+lean, which is the picture a worn MDS lifter and a leaking manifold actually
+produce.
 
 The simulator runs a 60-second drive cycle — idle, pull away, cruise, slow down —
 so the live dashboard actually moves.
@@ -147,6 +194,8 @@ cli.py            argparse front end, output formatting
   report.py       findings: turns readings into "here is what to check"
   logger.py       CSV and SQLite recording
     session.py    the high-level vehicle API
+      vehicles.py model profiles: engine layout and known issues
+      vin.py      VIN validation and decoding
       elm327.py   adapter driver: handshake, framing, multi-frame CAN
       pids.py     parameter table and SAE J1979 decoders
       dtc.py      trouble code decoding and the fault database
@@ -176,6 +225,10 @@ hardware, no car.
 - **Manufacturer-specific codes** (P1xxx, P2xxx, P3xxx) are decoded structurally
   but their meaning varies by make, so those are reported as such rather than
   guessed at.
+- **Vehicle profiles are advisory.** The known-issue notes describe what a model
+  commonly suffers from; they are a place to start looking, not a diagnosis. The
+  engine layout facts (bank sides, cylinder numbering, MDS cylinders, firing
+  order) are specifications and can be relied on.
 - **Clearing codes does not fix anything.** It erases the freeze frame and resets
   every readiness monitor, which means the car cannot pass an emissions test
   until you have driven a full cycle. If the fault is still present, the code

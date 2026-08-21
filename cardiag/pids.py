@@ -328,8 +328,11 @@ _TABLE: list[PID] = [
     _pid(0x05, "COOLANT_TEMP", "Engine coolant temperature", 1, _temperature, "degC", -40, 215, priority=90),
     _pid(0x06, "SHORT_FUEL_TRIM_1", "Short term fuel trim, bank 1", 1, _percent_signed, "%", -100, 99.2, priority=60),
     _pid(0x07, "LONG_FUEL_TRIM_1", "Long term fuel trim, bank 1", 1, _percent_signed, "%", -100, 99.2, priority=60),
-    _pid(0x08, "SHORT_FUEL_TRIM_2", "Short term fuel trim, bank 2", 1, _percent_signed, "%", -100, 99.2),
-    _pid(0x09, "LONG_FUEL_TRIM_2", "Long term fuel trim, bank 2", 1, _percent_signed, "%", -100, 99.2),
+    # Bank 2 trims matter as much as bank 1 on a V-engine, and comparing the two
+    # banks is how you tell a one-sided fault from a whole-engine one. Cars with
+    # a single bank simply do not advertise these.
+    _pid(0x08, "SHORT_FUEL_TRIM_2", "Short term fuel trim, bank 2", 1, _percent_signed, "%", -100, 99.2, priority=60),
+    _pid(0x09, "LONG_FUEL_TRIM_2", "Long term fuel trim, bank 2", 1, _percent_signed, "%", -100, 99.2, priority=60),
     _pid(0x0A, "FUEL_PRESSURE", "Fuel pressure (gauge)", 1, _fuel_pressure, "kPa", 0, 765),
     _pid(0x0B, "INTAKE_PRESSURE", "Intake manifold absolute pressure", 1, _u8, "kPa", 0, 255, priority=50),
     _pid(0x0C, "RPM", "Engine speed", 2, _rpm, "rpm", 0, 16383.75, priority=100),

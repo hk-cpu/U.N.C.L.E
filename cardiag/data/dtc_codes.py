@@ -374,12 +374,13 @@ P_SUBSYSTEM = {
     "C": "hybrid propulsion",
 }
 
-#: Codes that mean the engine is being actively damaged or the car is unsafe.
+#: Codes that mean the engine is being actively damaged or the car is unsafe -
+#: stop-driving territory. Misfires are deliberately not here: they are graded
+#: "serious" by the P03 rule, which is bad enough without crying wolf.
 CRITICAL_CODES = {
     "P0217",  # engine overheating
     "P0219",  # engine overspeed
     "P0234",  # overboost
-    "P0300",  # misfire can destroy the catalyst
-    "P0521",  # oil pressure
+    "P0521",  # oil pressure below the safe threshold
     "P0606",  # ECU processor fault
 }

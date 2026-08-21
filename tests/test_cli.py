@@ -23,7 +23,7 @@ def test_scan_on_a_healthy_car_exits_zero(capsys):
 
 
 def test_scan_on_a_faulty_car_exits_nonzero(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "scan")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "scan")
     assert code == 1
     assert "Check-engine light is ON" in out
     assert "P0301" in out
@@ -36,7 +36,7 @@ def test_scan_is_the_default_command(capsys):
 
 
 def test_scan_json_is_parseable(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "--json", "scan")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "--json", "scan")
     payload = json.loads(out)
     assert code == 1
     assert payload["headline"] == "Check-engine light is ON"
@@ -44,7 +44,7 @@ def test_scan_json_is_parseable(capsys):
 
 
 def test_codes_command_lists_causes(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "codes")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "codes")
     assert code == 1
     assert "Spark plug or coil on cylinder 1" in out
 
@@ -56,18 +56,18 @@ def test_codes_on_a_clean_car(capsys):
 
 
 def test_codes_stored_only(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "--json", "codes", "--stored-only")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "--json", "codes", "--stored-only")
     payload = json.loads(out)
     assert all(item["status"] == "stored" for item in payload)
 
 
 def test_clear_requires_confirmation_when_not_a_tty(capsys):
-    code, _ = run(capsys, "--sim", "--profile", "faulty", "clear")
+    code, _ = run(capsys, "--sim", "--sim-profile", "faulty", "clear")
     assert code == 2
 
 
 def test_clear_with_yes_works(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "clear", "--yes")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "clear", "--yes")
     assert code == 0
     assert "Codes cleared." in out
 
@@ -121,13 +121,13 @@ def test_pids_all_lists_everything_without_a_car(capsys):
 
 
 def test_monitors_command(capsys):
-    code, out = run(capsys, "--sim", "--profile", "emissions", "monitors")
+    code, out = run(capsys, "--sim", "--sim-profile", "emissions", "monitors")
     assert code == 0
     assert "Emissions pre-check: fail" in out
 
 
 def test_freeze_command(capsys):
-    code, out = run(capsys, "--sim", "--profile", "faulty", "freeze")
+    code, out = run(capsys, "--sim", "--sim-profile", "faulty", "freeze")
     assert code == 0
     assert "P0301" in out
     assert "2310 rpm" in out

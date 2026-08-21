@@ -24,6 +24,15 @@ SUPPORTED_PIDS = {
 VIN = "1HGCM82633A004352"
 ECU_NAME = "ECM-EngineControl"
 
+#: A valid 2006 Dodge Charger R/T VIN: 2B3 (Canadian-built Dodge car),
+#: position 8 'H' for the 5.7 HEMI, position 10 '6' for 2006, built at
+#: Brampton. The check digit is correct, so profile matching accepts it.
+CHARGER_VIN = "2B3KA53H66H123456"
+
+#: Bank 2 sensors exist on a V8 and not on the inline four the default
+#: simulated car models, so V8 profiles advertise more PIDs.
+V8_EXTRA_PIDS = {0x08, 0x09, 0x18, 0x19, 0x3D, 0x3F}
+
 PROFILES = {
     "default": {
         "codes": [],
@@ -43,6 +52,27 @@ PROFILES = {
         "mil": False,
         "not_ready": True,
         "description": "codes cleared recently, monitors not yet complete",
+    },
+    "charger": {
+        "codes": [],
+        "pending": [],
+        "mil": False,
+        "vin": CHARGER_VIN,
+        "v8": True,
+        "ecu_name": "ECM-HEMI-5.7",
+        "description": "healthy 2006 Dodge Charger R/T, 5.7 HEMI V8",
+    },
+    "charger-misfire": {
+        # A misfire on cylinder 4 - one of the four MDS cylinders - alongside a
+        # lean bank 2, which together is the classic worn-lifter picture.
+        "codes": ["P0304", "P0174", "P0300"],
+        "pending": ["P0430"],
+        "mil": True,
+        "vin": CHARGER_VIN,
+        "v8": True,
+        "ecu_name": "ECM-HEMI-5.7",
+        "lean_bank": 2,
+        "description": "2006 Charger R/T with an MDS-cylinder misfire",
     },
 }
 
@@ -69,6 +99,12 @@ class SimulatorTransport(Transport):
         self._pending = list(self.profile["pending"])
         self._mil = bool(self.profile["mil"])
         self._cleared_at: float | None = None
+
+        self.vin = self.profile.get("vin", VIN)
+        self.ecu_name = self.profile.get("ecu_name", ECU_NAME)
+        self.supported = set(SUPPORTED_PIDS)
+        if self.profile.get("v8"):
+            self.supported |= V8_EXTRA_PIDS
 
     # -- transport plumbing ------------------------------------------------
     def open(self) -> None:
@@ -183,12 +219,12 @@ class SimulatorTransport(Transport):
         if mode == 0x02:
             if not self._codes or frame_number != 0x00:
                 return "NO DATA"
-            data = _freeze_frame(pid)
+            data = self._freeze_frame(pid)
             if data is None:
                 return "NO DATA"
             return _hex(bytes([0x42, pid, frame_number]) + data)
 
-        if pid not in SUPPORTED_PIDS:
+        if pid not in self.supported:
             return "NO DATA"
 
         data = self._live_value(pid)
@@ -203,10 +239,10 @@ class SimulatorTransport(Transport):
         if pid == 0x00:
             return _hex(bytes([0x49, 0x00]) + _bitmap(0x00, {0x02, 0x0A}))
         if pid == 0x02:
-            payload = bytes([0x49, 0x02, 0x01]) + VIN.encode("ascii")
+            payload = bytes([0x49, 0x02, 0x01]) + self.vin.encode("ascii")
             return _multiline(payload)
         if pid == 0x0A:
-            payload = bytes([0x49, 0x0A, 0x01]) + ECU_NAME.encode("ascii").ljust(20, b"\x00")
+            payload = bytes([0x49, 0x0A, 0x01]) + self.ecu_name.encode("ascii").ljust(20, b"\x00")
             return _multiline(payload)
         return "NO DATA"
 
@@ -260,17 +296,34 @@ class SimulatorTransport(Transport):
             "t": t,
         }
 
+    #: The "system too lean" code for each bank.
+    _LEAN_CODE = {1: "P0171", 2: "P0174"}
+
+    def _lean_bank(self) -> int | None:
+        """Which bank, if any, is running lean enough to skew its fuel trims.
+
+        Tied to the stored code so that clearing the codes also clears the
+        symptom, the way it would on a car whose fault has been fixed.
+        """
+        configured = self.profile.get("lean_bank")
+        candidates = [configured] if configured else [1, 2]
+        for bank in candidates:
+            if self._LEAN_CODE[bank] in self._codes:
+                return bank
+        return None
+
     def _live_value(self, pid: int) -> bytes | None:
         state = self._engine_state()
-        # A lean bank-1 fault shows up as a large positive long-term trim.
-        lean = "P0171" in self._codes
+        # A lean bank shows up as a large positive long-term trim on that bank.
+        lean_bank = self._lean_bank()
+        v8 = bool(self.profile.get("v8"))
 
         if pid == 0x00:
-            return _bitmap(0x00, SUPPORTED_PIDS)
+            return _bitmap(0x00, self.supported)
         if pid == 0x20:
-            return _bitmap(0x20, SUPPORTED_PIDS)
+            return _bitmap(0x20, self.supported)
         if pid == 0x40:
-            return _bitmap(0x40, SUPPORTED_PIDS)
+            return _bitmap(0x40, self.supported)
         if pid == 0x01:
             return self._monitor_status()
         if pid == 0x03:
@@ -280,9 +333,13 @@ class SimulatorTransport(Transport):
         if pid == 0x05:
             return bytes([int(state["coolant"]) + 40])
         if pid == 0x06:
-            return bytes([_trim(3.9 if lean else 0.8)])
+            return bytes([_trim(3.9 if lean_bank == 1 else 0.8)])
         if pid == 0x07:
-            return bytes([_trim(21.1 if lean else 2.3)])
+            return bytes([_trim(21.1 if lean_bank == 1 else 2.3)])
+        if pid == 0x08 and v8:
+            return bytes([_trim(3.9 if lean_bank == 2 else 1.6)])
+        if pid == 0x09 and v8:
+            return bytes([_trim(23.4 if lean_bank == 2 else 3.1)])
         if pid == 0x0B:
             return bytes([int(28 + state["throttle"] * 70)])
         if pid == 0x0C:
@@ -298,11 +355,21 @@ class SimulatorTransport(Transport):
         if pid == 0x11:
             return bytes([_scale(state["throttle"])])
         if pid == 0x13:
-            return bytes([0x03])          # B1S1 and B1S2 fitted
-        if pid in (0x14, 0x15):
-            swing = math.sin(state["t"] * (2.4 if pid == 0x14 else 0.5))
-            voltage = 0.45 + swing * (0.35 if pid == 0x14 else 0.08)
+            # Bits 0-3 are bank 1 sensors 1-4, bits 4-7 bank 2. A V8 has an
+            # upstream and a downstream sensor on each bank.
+            return bytes([0x33 if v8 else 0x03])
+        if pid in (0x14, 0x15, 0x18, 0x19):
+            upstream = pid in (0x14, 0x18)
+            # Upstream sensors swing quickly as the ECU trims the mixture;
+            # downstream ones sit fairly still behind a working catalyst.
+            offset = 0.0 if pid in (0x14, 0x15) else 1.1
+            swing = math.sin(state["t"] * (2.4 if upstream else 0.5) + offset)
+            voltage = 0.45 + swing * (0.35 if upstream else 0.08)
             return bytes([int(voltage * 200), 0xFF])
+        if pid in (0x3D, 0x3F) and v8:
+            # Bank 2 catalyst temperatures, rising with load.
+            celsius = 320 + state["load"] * 400 + (30 if pid == 0x3F else 0)
+            return _u16(int((celsius + 40) * 10))
         if pid == 0x1F:
             return _u16(int(state["t"]) & 0xFFFF)
         if pid == 0x21:
@@ -355,6 +422,50 @@ class SimulatorTransport(Transport):
         return bytes([first, second, third, fourth])
 
 
+    def _freeze_frame(self, pid: int) -> bytes | None:
+        """The snapshot the ECU stored when the fault was confirmed.
+
+        The trigger code and the skewed fuel trims are taken from whatever this
+        profile actually stored, so the freeze frame agrees with mode 03 instead
+        of contradicting it.
+        """
+        from .. import dtc as dtc_module
+
+        lean_bank = self._lean_bank()
+        v8 = bool(self.profile.get("v8"))
+
+        # A real ECU stores the frame for the fault it considers most
+        # significant, so pick the worst stored code rather than the first.
+        trigger = min(
+            self._codes,
+            key=lambda code: (
+                dtc_module.SEVERITY_ORDER[dtc_module.severity_of(code)], code
+            ),
+            default=None,
+        )
+
+        frozen = {
+            # PID 02 in mode 02 is the code that caused the frame to be stored.
+            0x02: dtc_module.encode(trigger) if trigger else None,
+            0x04: bytes([_scale(0.47)]),
+            0x05: bytes([89 + 40]),
+            0x0B: bytes([44]),
+            0x0C: _u16(int(2310 * 4)),
+            0x0D: bytes([63]),
+            0x0E: bytes([int((18 + 64) * 2)]),
+            0x0F: bytes([31 + 40]),
+            0x10: _u16(int(14.7 * 100)),
+            0x11: bytes([_scale(0.31)]),
+            0x06: bytes([_trim(6.2 if lean_bank == 1 else 1.6)]),
+            0x07: bytes([_trim(19.5 if lean_bank == 1 else 2.3)]),
+        }
+        if v8:
+            frozen[0x08] = bytes([_trim(6.2 if lean_bank == 2 else 1.6)])
+            frozen[0x09] = bytes([_trim(21.9 if lean_bank == 2 else 3.1)])
+
+        return frozen.get(pid)
+
+
 # ---------------------------------------------------------------------------
 # Encoding helpers
 # ---------------------------------------------------------------------------
@@ -396,22 +507,3 @@ def _multiline(payload: bytes) -> str:
         lines.append(f"{index:X}:{payload[start:start + 7].hex().upper()}")
         index += 1
     return "\r".join(lines)
-
-
-def _freeze_frame(pid: int) -> bytes | None:
-    """The snapshot the ECU stored when the fault was confirmed."""
-    frozen = {
-        0x02: bytes.fromhex("0301"),      # the code that set the frame: P0301
-        0x04: bytes([_scale(0.47)]),
-        0x05: bytes([89 + 40]),
-        0x0B: bytes([44]),
-        0x0C: _u16(int(2310 * 4)),
-        0x0D: bytes([63]),
-        0x0E: bytes([int((18 + 64) * 2)]),
-        0x0F: bytes([31 + 40]),
-        0x10: _u16(int(14.7 * 100)),
-        0x11: bytes([_scale(0.31)]),
-        0x06: bytes([_trim(6.2)]),
-        0x07: bytes([_trim(19.5)]),
-    }
-    return frozen.get(pid)

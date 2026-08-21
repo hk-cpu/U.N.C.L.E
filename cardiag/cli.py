@@ -8,7 +8,8 @@ import os
 import sys
 import time
 
-from . import __version__, console, dtc, pids, report as report_module
+from . import __version__, console, dtc, pids, vehicles, vin as vin_module
+from . import report as report_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
 from .logger import open_logger
@@ -45,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="use the built-in simulated car instead of real hardware",
     )
     parser.add_argument(
-        "--profile", default="default", choices=sorted(SIM_PROFILES),
+        "--sim-profile", default="default", choices=sorted(SIM_PROFILES),
         help="which simulated car --sim should present (default: default)",
     )
     parser.add_argument(
@@ -62,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable coloured output",
+    )
+    parser.add_argument(
+        "--vehicle", metavar="MODEL",
+        help=(
+            "apply a vehicle profile for model-specific advice "
+            f"(known: {vehicles.describe_choices()}). "
+            "Detected from the VIN when not given; 'none' disables it."
+        ),
     )
 
     # Running cardiag with no subcommand falls through to "scan", so scan's own
@@ -108,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = sub.add_parser("lookup", help="explain a trouble code (no car needed)")
     lookup.add_argument("codes", nargs="+", help="codes such as P0420")
 
+    sub.add_parser("vehicle", help="show what cardiag knows about this model")
+
+    decode = sub.add_parser("vin", help="decode a VIN")
+    decode.add_argument("vin", nargs="?",
+                        help="the VIN to decode; read from the car when omitted")
+
     return parser
 
 
@@ -132,13 +147,22 @@ def _run(argv: list[str] | None) -> int:
 
     command = args.command or "scan"
 
-    # These two need no vehicle connection.
+    try:
+        args.profile_object = _resolve_profile(args)
+    except KeyError as exc:
+        return _fail(str(exc.args[0]))
+
+    # These need no vehicle connection.
     if command == "lookup":
         return _command_lookup(args)
     if command == "ports":
         return _command_ports(args)
     if command == "pids" and args.all:
         return _command_pids_all(args)
+    if command == "vin" and args.vin:
+        return _command_vin(args, session=None)
+    if command == "vehicle" and args.profile_object is not None:
+        return _command_vehicle(args, session=None)
 
     try:
         url = _connection_url(args)
@@ -155,6 +179,8 @@ def _run(argv: list[str] | None) -> int:
         "pids": _command_pids,
         "monitors": _command_monitors,
         "freeze": _command_freeze,
+        "vehicle": _command_vehicle,
+        "vin": _command_vin,
     }
     handler = handlers.get(command)
     if handler is None:  # pragma: no cover - argparse rejects unknown commands
@@ -176,9 +202,28 @@ def _run(argv: list[str] | None) -> int:
 # Connection
 # ---------------------------------------------------------------------------
 
+def _resolve_profile(args: argparse.Namespace) -> vehicles.VehicleProfile | None:
+    """Turn ``--vehicle`` into a profile, or ``None`` to auto-detect by VIN."""
+    requested = getattr(args, "vehicle", None)
+    if not requested:
+        return None
+    if requested.strip().lower() in ("none", "off", "generic"):
+        # An explicit opt-out: recorded so VIN detection is skipped too.
+        args.vehicle_disabled = True
+        return None
+
+    profile = vehicles.get(requested)
+    if profile is None:
+        raise KeyError(
+            f"unknown vehicle profile {requested!r}. "
+            f"Known profiles: {vehicles.describe_choices()}"
+        )
+    return profile
+
+
 def _connection_url(args: argparse.Namespace) -> str:
     if args.sim:
-        return f"sim://?profile={args.profile}"
+        return f"sim://?profile={args.sim_profile}"
     if args.port:
         url = args.port
     elif os.environ.get(ENV_PORT):
@@ -264,7 +309,12 @@ def _command_scan(args: argparse.Namespace, session: Session) -> int:
     if progress:
         print(console.paint("Scanning...", "dim"), end="\r", flush=True)
 
-    result = report_module.build(session, include_freeze_frame=not args.no_freeze)
+    result = report_module.build(
+        session,
+        include_freeze_frame=not args.no_freeze,
+        profile=args.profile_object,
+        detect_profile=not getattr(args, "vehicle_disabled", False),
+    )
 
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
@@ -291,6 +341,8 @@ def _print_report(result: report_module.HealthReport, session: Session,
     if vehicle.battery_voltage is not None:
         subtitle += f"  |  battery {vehicle.battery_voltage:.1f} V"
     print(console.paint(subtitle, "dim"))
+    if result.profile is not None:
+        print(console.paint(f"Profile: {result.profile.name}", "dim"))
     print()
 
     print(console.heading("Findings"))
@@ -365,7 +417,7 @@ def _command_codes(args: argparse.Namespace, session: Session) -> int:
         print(f" {console.severity(mark, item.severity)} {console.paint(label, 'bold')}")
         print(console.wrap(f"{item.status} code | {item.system} | {item.origin}"))
         for cause in item.causes:
-            print(console.wrap(f"- {cause}", indent="       "))
+            print(console.bullet(cause, indent="       "))
         print()
     return 1
 
@@ -558,6 +610,129 @@ def _command_freeze(args: argparse.Namespace, session: Session) -> int:
     return 0
 
 
+def _command_vehicle(args: argparse.Namespace, session: Session | None) -> int:
+    profile = args.profile_object
+    detected_from = "--vehicle" if profile else None
+
+    if profile is None and session is not None:
+        vin = session.read_vin()
+        if vin:
+            profile = vehicles.match_vin(vin)
+            detected_from = f"VIN {vin}"
+
+    if profile is None:
+        if args.json:
+            print(json.dumps({"profile": None,
+                              "known": sorted(vehicles.PROFILES)}, indent=2))
+            return 0
+        print("No vehicle profile applies to this car.")
+        print(f"cardiag has profiles for: {vehicles.describe_choices()}")
+        print("Pick one explicitly with --vehicle if yours is listed.")
+        return 0
+
+    if args.json:
+        print(json.dumps(profile.to_dict(), indent=2))
+        return 0
+
+    engine = profile.engine
+    print(console.paint(profile.name, "bold"))
+    print(console.paint(f"{profile.years}  |  matched from {detected_from}", "dim"))
+    print()
+
+    print(console.heading("Engine"))
+    rows = [
+        ("engine", engine.name),
+        ("cylinders", str(engine.cylinders)),
+        ("spark plugs", f"{engine.total_plugs} ({engine.plugs_per_cylinder} per cylinder)"),
+    ]
+    if engine.firing_order:
+        rows.append(("firing order", "-".join(str(c) for c in engine.firing_order)))
+    for bank, side in sorted(engine.bank_side.items()):
+        members = sorted(c for c, b in engine.cylinder_bank.items() if b == bank)
+        rows.append((f"bank {bank}", f"{side}: cylinders {', '.join(map(str, members))}"))
+    if engine.deactivated_cylinders:
+        rows.append(("deactivated at cruise",
+                     ", ".join(str(c) for c in engine.deactivated_cylinders)))
+    if profile.transmission:
+        rows.append(("transmission", profile.transmission))
+    if profile.expected_protocol:
+        rows.append(("OBD protocol", profile.expected_protocol))
+    print(console.table(rows))
+
+    if profile.notes:
+        print()
+        print(console.heading("Worth knowing"))
+        for note in profile.notes:
+            print(console.bullet(note))
+            print()
+
+    if profile.known_issues:
+        print(console.heading("Known issues on this model"))
+        for issue in profile.known_issues:
+            mark = console.SEVERITY_MARK.get(issue.severity, " -")
+            print(f" {console.severity(mark, issue.severity)} "
+                  f"{console.paint(issue.title, 'bold')}")
+            print(console.wrap(issue.detail))
+            triggers = list(issue.codes) + [f"{p}xx" for p in issue.code_prefixes]
+            if triggers:
+                print(console.wrap(console.paint(
+                    "Codes: " + ", ".join(triggers), "dim")))
+            print()
+    return 0
+
+
+def _command_vin(args: argparse.Namespace, session: Session | None) -> int:
+    raw = args.vin
+    if not raw and session is not None:
+        raw = session.read_vin()
+    if not raw:
+        return _fail(
+            "the car did not report a VIN (cars built before roughly 2005 often "
+            "do not). Pass one directly:  cardiag vin 2B3KA53H66H123456"
+        )
+
+    info = vin_module.decode(raw)
+    profile = vehicles.match_vin(raw)
+
+    if args.json:
+        payload = info.to_dict()
+        payload["profile"] = profile.key if profile else None
+        print(json.dumps(payload, indent=2))
+        return 0 if info.trustworthy else 1
+
+    print(console.heading("VIN"))
+    rows = [("vin", info.vin)]
+    if info.manufacturer:
+        rows.append(("manufacturer", info.manufacturer))
+    else:
+        rows.append(("manufacturer", f"unknown (world code {info.wmi})"))
+    if info.model_year:
+        rows.append(("model year", str(info.model_year)))
+    if info.engine:
+        rows.append(("engine", info.engine))
+    if info.plant:
+        rows.append(("built at", info.plant))
+    if info.serial:
+        rows.append(("serial", info.serial))
+    rows.append((
+        "check digit",
+        console.paint("valid", "green") if info.check_digit_ok
+        else console.paint("INVALID", "red"),
+    ))
+    print(console.table(rows))
+
+    if info.problems:
+        print()
+        for problem in info.problems:
+            print(console.bullet(console.paint(problem, "yellow")))
+
+    if profile:
+        print()
+        print(console.paint(f"Matches profile: {profile.name}", "green"))
+        print(console.paint("Run 'cardiag vehicle' to see what that adds.", "dim"))
+    return 0 if info.trustworthy else 1
+
+
 def _command_lookup(args: argparse.Namespace) -> int:
     described = []
     for code in args.codes:
@@ -579,11 +754,31 @@ def _command_lookup(args: argparse.Namespace) -> int:
             print(console.paint(headline, "bold"))
         print(console.wrap(f"{item.system} | {item.origin} | severity: {item.severity}",
                            indent="  "))
+
+        profile = args.profile_object
+        if profile is not None:
+            located = report_module.locate_code(item.code, profile)
+            note = profile.code_notes.get(item.code)
+            if located or note:
+                print()
+                print(f"  On a {profile.name}:")
+                for line in (located, note):
+                    if line:
+                        print(console.wrap(line, indent="    "))
+
         if item.causes:
             print()
             print("  Likely causes, most common first:")
             for cause in item.causes:
-                print(console.wrap(f"- {cause}", indent="    "))
+                print(console.bullet(cause, indent="    "))
+
+        if profile is not None:
+            issues = profile.issues_for([item.code])
+            if issues:
+                print()
+                print("  Known issues on this model that fit:")
+                for issue in issues:
+                    print(console.bullet(issue.title, indent="    "))
         print()
     return 0
 

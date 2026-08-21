@@ -107,8 +107,13 @@ def table(rows: list[tuple[str, ...]], headers: tuple[str, ...] | None = None,
     return "\n".join(lines)
 
 
-def wrap(text: str, indent: str = "     ", limit: int | None = None) -> str:
-    """Wrap prose to the terminal width, with a hanging indent."""
+def wrap(text: str, indent: str = "     ", limit: int | None = None,
+         subsequent: str | None = None) -> str:
+    """Wrap prose to the terminal width.
+
+    ``subsequent`` sets the indent for continuation lines; leave it unset to
+    keep the block flush.
+    """
     import textwrap
 
     limit = limit or min(width(), 90)
@@ -116,5 +121,14 @@ def wrap(text: str, indent: str = "     ", limit: int | None = None) -> str:
         text,
         width=max(40, limit),
         initial_indent=indent,
-        subsequent_indent=indent,
+        subsequent_indent=indent if subsequent is None else subsequent,
+    )
+
+
+def bullet(text: str, indent: str = "  ", marker: str = "- ") -> str:
+    """A wrapped bullet point whose continuation lines line up under the text."""
+    return wrap(
+        f"{marker}{text}",
+        indent=indent,
+        subsequent=indent + " " * len(marker),
     )

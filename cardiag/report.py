@@ -8,13 +8,18 @@ several plausible causes.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import dtc
+from . import dtc, vehicles
 from .session import Reading, Session, VehicleInfo
 from .pids import MonitorStatus
+from .vehicles import VehicleProfile
+
+#: Misfire codes name their cylinder in the last two digits: P0301 -> 1.
+_MISFIRE = re.compile(r"^P030([1-9A-C])$")
 
 #: Ordered worst-first, matching dtc.SEVERITY_ORDER.
 FINDING_SEVERITY = ("critical", "serious", "moderate", "advisory", "info")
@@ -46,7 +51,12 @@ class HealthReport:
     readings: dict[str, Reading]
     findings: list[Finding] = field(default_factory=list)
     freeze_frame: dict[str, Any] = field(default_factory=dict)
+    profile: VehicleProfile | None = None
     generated_at: float = field(default_factory=time.time)
+
+    @property
+    def thresholds(self) -> vehicles.Thresholds:
+        return self.profile.thresholds if self.profile else vehicles.Thresholds()
 
     @property
     def worst_severity(self) -> str:
@@ -78,6 +88,7 @@ class HealthReport:
                 "adapter": self.vehicle.adapter,
                 "battery_voltage": self.vehicle.battery_voltage,
             },
+            "profile": self.profile.to_dict() if self.profile else None,
             "status": status_dict(self.status),
             "codes": [item.to_dict() for item in self.codes],
             "readings": {
@@ -97,11 +108,21 @@ class HealthReport:
         }
 
 
-def build(session: Session, include_freeze_frame: bool = True) -> HealthReport:
-    """Run a full scan and analyse the result."""
+def build(session: Session, include_freeze_frame: bool = True,
+          profile: VehicleProfile | None = None,
+          detect_profile: bool = True) -> HealthReport:
+    """Run a full scan and analyse the result.
+
+    When ``profile`` is omitted the vehicle's VIN is used to pick one, so a car
+    cardiag knows about gets model-specific advice without being asked. Pass
+    ``detect_profile=False`` to force a purely generic report.
+    """
     vehicle = session.vehicle_info()
     status = session.monitor_status()
     codes = session.read_dtcs()
+
+    if profile is None and detect_profile and vehicle.vin:
+        profile = vehicles.match_vin(vehicle.vin)
 
     readings = session.read_many(entry.pid for entry in session.live_pids())
 
@@ -115,6 +136,7 @@ def build(session: Session, include_freeze_frame: bool = True) -> HealthReport:
         codes=codes,
         readings=readings,
         freeze_frame=freeze,
+        profile=profile,
     )
     report.findings = analyse(report)
     return report
@@ -128,6 +150,7 @@ def analyse(report: HealthReport) -> list[Finding]:
     findings: list[Finding] = []
 
     findings.extend(_analyse_codes(report))
+    findings.extend(_analyse_known_issues(report))
     findings.extend(_analyse_monitors(report))
     findings.extend(_analyse_electrical(report))
     findings.extend(_analyse_fuel_trims(report))
@@ -160,6 +183,16 @@ def _analyse_codes(report: HealthReport) -> list[Finding]:
             )
 
         detail = f"{code.system}, {code.origin}."
+
+        # A profile turns "cylinder 4" into somewhere you can put a spanner.
+        located = locate_code(code.code, report.profile)
+        if located:
+            detail += f" {located}"
+        if report.profile:
+            note = report.profile.code_notes.get(code.code)
+            if note:
+                detail += f" {note}"
+
         if code.status == "pending":
             detail += (
                 " Pending: the fault has been seen once but not confirmed, so no "
@@ -179,6 +212,51 @@ def _analyse_codes(report: HealthReport) -> list[Finding]:
                 suggestion=suggestion,
             )
         )
+    return findings
+
+
+def locate_code(code: str, profile: VehicleProfile | None) -> str:
+    """Say where on the engine a cylinder-specific code points."""
+    if profile is None:
+        return ""
+
+    match = _MISFIRE.match(code)
+    if not match:
+        return ""
+
+    cylinder = int(match.group(1), 16)
+    if cylinder > profile.engine.cylinders:
+        return ""
+
+    sentence = f"On your engine, {profile.engine.locate(cylinder)}."
+    if profile.engine.is_deactivated(cylinder):
+        sentence += " It is also one of the cylinders MDS shuts down at cruise."
+    return sentence
+
+
+def _analyse_known_issues(report: HealthReport) -> list[Finding]:
+    """Surface the failures this particular model is known for."""
+    profile = report.profile
+    if profile is None or not report.codes:
+        return []
+
+    codes = [item.code for item in report.codes]
+    findings = []
+
+    for issue in profile.issues_for(codes):
+        triggering = sorted({code for code in codes if issue.matches(code)})
+        suggestion = ""
+        if issue.checks:
+            suggestion = "How to check: " + " ".join(
+                f"({index}) {check}" for index, check in enumerate(issue.checks, 1)
+            )
+
+        findings.append(Finding(
+            severity=issue.severity,
+            title=f"Known issue on this model: {issue.title}",
+            detail=f"Raised by {', '.join(triggering)}. {issue.detail}",
+            suggestion=suggestion,
+        ))
     return findings
 
 
@@ -236,11 +314,12 @@ def _analyse_electrical(report: HealthReport) -> list[Finding]:
     if voltage is None:
         return []
 
+    limits = report.thresholds
     rpm_reading = report.readings.get("RPM")
     running = bool(rpm_reading and isinstance(rpm_reading.value, (int, float))
                    and rpm_reading.value > 400)
 
-    if running and voltage < 13.0:
+    if running and voltage < limits.charging_low:
         return [Finding(
             "serious",
             f"Charging voltage is low ({voltage:.1f} V)",
@@ -249,7 +328,7 @@ def _analyse_electrical(report: HealthReport) -> list[Finding]:
             "is being drained as you drive.",
             "Check the drive belt, then have the alternator output tested.",
         )]
-    if voltage > 15.0:
+    if voltage > limits.charging_high:
         return [Finding(
             "serious",
             f"Charging voltage is high ({voltage:.1f} V)",
@@ -312,32 +391,37 @@ def _analyse_temperatures(report: HealthReport) -> list[Finding]:
     coolant = report.readings.get("COOLANT_TEMP")
     run_time = report.readings.get("RUN_TIME")
 
+    limits = report.thresholds
+
     if coolant is not None and isinstance(coolant.value, (int, float)):
-        if coolant.value > 110:
+        if coolant.value > limits.coolant_critical:
             findings.append(Finding(
                 "critical",
                 f"Engine is overheating ({coolant.value} degC)",
-                "Coolant above 110 degC risks warping the head and destroying "
-                "the head gasket.",
+                f"Coolant above {limits.coolant_critical:.0f} degC risks warping "
+                "the head and destroying the head gasket.",
                 "Stop driving. Let it cool, then check coolant level, the fan and "
                 "the water pump before restarting.",
             ))
-        elif coolant.value > 103:
+        elif coolant.value > limits.coolant_warning:
             findings.append(Finding(
                 "serious",
                 f"Coolant temperature is high ({coolant.value} degC)",
-                "Most engines hold 85-100 degC. Running hotter than that under "
-                "normal load points at a cooling system problem.",
+                f"This engine normally holds {limits.coolant_normal_low:.0f}-"
+                f"{limits.coolant_normal_high:.0f} degC. Running hotter than that "
+                "under normal load points at a cooling system problem.",
                 "Check coolant level and that the radiator fan cuts in.",
             ))
         elif (run_time is not None and isinstance(run_time.value, (int, float))
-              and run_time.value > 600 and coolant.value < 70):
+              and run_time.value > 600
+              and coolant.value < limits.coolant_normal_low - 10):
             findings.append(Finding(
                 "moderate",
                 f"Engine is not reaching operating temperature ({coolant.value} degC)",
                 f"After {int(run_time.value / 60)} minutes of running the coolant is "
-                "still below 70 degC. A thermostat stuck open costs fuel economy "
-                "and accelerates engine wear.",
+                f"still below {limits.coolant_normal_low - 10:.0f} degC. A thermostat "
+                "stuck open costs fuel economy and accelerates engine wear, and "
+                "stops the catalyst monitor ever completing.",
                 "Replace the thermostat; this is the usual cause and is a cheap fix.",
             ))
 
