@@ -259,11 +259,30 @@ def _command_ports(args: argparse.Namespace) -> int:
         print("You can still explore the tool with:  cardiag --sim scan")
         return 1
 
+    from .transport.serial_link import _looks_like_obd
+
     print(console.heading("Serial ports"))
-    print(console.table([(device, desc) for device, desc in ports],
-                        headers=("device", "description")))
+    rows = []
+    for device, desc in ports:
+        likely = _looks_like_obd((device, desc))
+        rows.append((
+            device,
+            desc,
+            console.paint("likely adapter", "green") if likely else "",
+        ))
+    print(console.table(rows, headers=("device", "description", "")))
     print()
-    print(f"Connect with:  cardiag --port {ports[0][0]} scan")
+
+    # Only recommend a port when it actually looks like an adapter; a built-in
+    # /dev/ttyS0 is not something to send someone at.
+    if _looks_like_obd(ports[0]):
+        print(f"Connect with:  cardiag --port {ports[0][0]} scan")
+    else:
+        print("None of these look like an OBD adapter.")
+        print("If yours is listed anyway, use it:  cardiag --port <device> scan")
+        print(console.paint(
+            "Otherwise check the adapter is plugged in and, on Linux, that you "
+            "are in the 'dialout' group.", "dim"))
     return 0
 
 

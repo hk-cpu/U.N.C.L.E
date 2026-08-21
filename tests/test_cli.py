@@ -211,3 +211,37 @@ def test_csv_logger_flattens_structured_readings(tmp_path):
 
     value = target.read_text().strip().splitlines()[1].split(",")[2]
     assert 0.0 <= float(value) <= 1.5
+
+
+# ---------------------------------------------------------------------------
+# Port listing
+# ---------------------------------------------------------------------------
+
+def test_ports_recommends_a_port_that_looks_like_an_adapter(capsys, monkeypatch):
+    from cardiag.transport import serial_link
+
+    monkeypatch.setattr(serial_link, "list_ports",
+                        lambda: [("/dev/ttyUSB0", "CH340 USB Serial")])
+    code, out = run(capsys, "ports")
+    assert code == 0
+    assert "likely adapter" in out
+    assert "cardiag --port /dev/ttyUSB0 scan" in out
+
+
+def test_ports_does_not_recommend_a_builtin_serial_port(capsys, monkeypatch):
+    from cardiag.transport import serial_link
+
+    monkeypatch.setattr(serial_link, "list_ports", lambda: [("/dev/ttyS0", "n/a")])
+    code, out = run(capsys, "ports")
+    assert code == 0
+    assert "None of these look like an OBD adapter" in out
+    assert "cardiag --port /dev/ttyS0 scan" not in out
+
+
+def test_ports_with_nothing_attached(capsys, monkeypatch):
+    from cardiag.transport import serial_link
+
+    monkeypatch.setattr(serial_link, "list_ports", list)
+    code, out = run(capsys, "ports")
+    assert code == 1
+    assert "--sim" in out
