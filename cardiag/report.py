@@ -1,0 +1,382 @@
+"""Health reports: gather everything the ECU knows and say what it means.
+
+The rules here are deliberately conservative. They flag readings that are
+outside what a healthy engine produces and explain why that matters; they do
+not attempt to name a single culprit, because the same symptom usually has
+several plausible causes.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from . import dtc
+from .session import Reading, Session, VehicleInfo
+from .pids import MonitorStatus
+
+#: Ordered worst-first, matching dtc.SEVERITY_ORDER.
+FINDING_SEVERITY = ("critical", "serious", "moderate", "advisory", "info")
+
+
+@dataclass
+class Finding:
+    """Something worth telling the owner about."""
+
+    severity: str
+    title: str
+    detail: str
+    suggestion: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity,
+            "title": self.title,
+            "detail": self.detail,
+            "suggestion": self.suggestion,
+        }
+
+
+@dataclass
+class HealthReport:
+    vehicle: VehicleInfo
+    status: MonitorStatus | None
+    codes: list[dtc.Dtc]
+    readings: dict[str, Reading]
+    findings: list[Finding] = field(default_factory=list)
+    freeze_frame: dict[str, Any] = field(default_factory=dict)
+    generated_at: float = field(default_factory=time.time)
+
+    @property
+    def worst_severity(self) -> str:
+        for level in FINDING_SEVERITY:
+            if any(finding.severity == level for finding in self.findings):
+                return level
+        return "info"
+
+    @property
+    def headline(self) -> str:
+        if self.status and self.status.mil_on:
+            return "Check-engine light is ON"
+        if any(finding.severity in ("critical", "serious") for finding in self.findings):
+            return "No warning light, but something needs attention"
+        if self.codes:
+            return "No warning light; stored codes present"
+        return "No faults found"
+
+    def to_dict(self) -> dict:
+        return {
+            "generated_at": self.generated_at,
+            "headline": self.headline,
+            "worst_severity": self.worst_severity,
+            "vehicle": {
+                "vin": self.vehicle.vin,
+                "ecu_name": self.vehicle.ecu_name,
+                "fuel_type": self.vehicle.fuel_type,
+                "protocol": self.vehicle.protocol,
+                "adapter": self.vehicle.adapter,
+                "battery_voltage": self.vehicle.battery_voltage,
+            },
+            "status": status_dict(self.status),
+            "codes": [item.to_dict() for item in self.codes],
+            "readings": {
+                name: {
+                    "description": reading.pid.description,
+                    "value": plain_value(reading.value),
+                    "unit": reading.pid.unit,
+                    "formatted": reading.pid.format(reading.value),
+                }
+                for name, reading in self.readings.items()
+            },
+            "freeze_frame": {
+                key: (value.pid.format(value.value) if isinstance(value, Reading) else value)
+                for key, value in self.freeze_frame.items()
+            },
+            "findings": [finding.to_dict() for finding in self.findings],
+        }
+
+
+def build(session: Session, include_freeze_frame: bool = True) -> HealthReport:
+    """Run a full scan and analyse the result."""
+    vehicle = session.vehicle_info()
+    status = session.monitor_status()
+    codes = session.read_dtcs()
+
+    readings = session.read_many(entry.pid for entry in session.live_pids())
+
+    freeze: dict[str, Any] = {}
+    if include_freeze_frame and codes:
+        freeze = session.freeze_frame()
+
+    report = HealthReport(
+        vehicle=vehicle,
+        status=status,
+        codes=codes,
+        readings=readings,
+        freeze_frame=freeze,
+    )
+    report.findings = analyse(report)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Analysis rules
+# ---------------------------------------------------------------------------
+
+def analyse(report: HealthReport) -> list[Finding]:
+    findings: list[Finding] = []
+
+    findings.extend(_analyse_codes(report))
+    findings.extend(_analyse_monitors(report))
+    findings.extend(_analyse_electrical(report))
+    findings.extend(_analyse_fuel_trims(report))
+    findings.extend(_analyse_temperatures(report))
+
+    if not findings:
+        findings.append(
+            Finding(
+                "info",
+                "Nothing abnormal found",
+                "No trouble codes, and every live reading sampled was inside its "
+                "normal range.",
+            )
+        )
+
+    findings.sort(key=lambda item: FINDING_SEVERITY.index(item.severity))
+    return findings
+
+
+def _analyse_codes(report: HealthReport) -> list[Finding]:
+    findings = []
+    for code in report.codes:
+        suggestion = ""
+        if code.causes:
+            suggestion = "Most likely: " + "; ".join(code.causes[:3]) + "."
+        elif code.generic_fallback:
+            suggestion = (
+                "This code is not in the generic table - look it up against your "
+                "car's make and model for the specific meaning."
+            )
+
+        detail = f"{code.system}, {code.origin}."
+        if code.status == "pending":
+            detail += (
+                " Pending: the fault has been seen once but not confirmed, so no "
+                "warning light yet."
+            )
+        elif code.status == "permanent":
+            detail += (
+                " Permanent: set by the ECU and clearable only by the ECU itself, "
+                "after the fault stays away for several drive cycles."
+            )
+
+        findings.append(
+            Finding(
+                severity=code.severity,
+                title=f"{code.code} - {code.description}",
+                detail=detail,
+                suggestion=suggestion,
+            )
+        )
+    return findings
+
+
+def _analyse_monitors(report: HealthReport) -> list[Finding]:
+    status = report.status
+    if status is None:
+        return []
+
+    findings = []
+    not_ready = status.not_ready
+
+    if not_ready:
+        readable = ", ".join(name.replace("_", " ") for name in not_ready)
+        findings.append(
+            Finding(
+                severity="advisory" if status.emissions_ready else "moderate",
+                title=f"{len(not_ready)} readiness monitor(s) incomplete",
+                detail=(
+                    f"These self-tests have not finished since the codes were last "
+                    f"cleared: {readable}."
+                ),
+                suggestion=(
+                    "Drive a mixed cycle - cold start, some town driving, then "
+                    "15 minutes of steady motorway speed - and re-check. Most "
+                    "emissions tests fail a car with more than one incomplete "
+                    "monitor."
+                ),
+            )
+        )
+
+    if status.mil_on and not report.codes:
+        findings.append(
+            Finding(
+                severity="moderate",
+                title="Warning light is on but no codes were returned",
+                detail=(
+                    "The ECU reports the lamp is commanded on yet mode 03 returned "
+                    "nothing. The fault is usually stored in a module other than the "
+                    "engine ECU, which generic OBD-II cannot read."
+                ),
+                suggestion="A make-specific scan tool will see the other modules.",
+            )
+        )
+    return findings
+
+
+def _analyse_electrical(report: HealthReport) -> list[Finding]:
+    voltage = None
+    reading = report.readings.get("CONTROL_MODULE_VOLTAGE")
+    if reading is not None:
+        voltage = reading.value
+    elif report.vehicle.battery_voltage is not None:
+        voltage = report.vehicle.battery_voltage
+
+    if voltage is None:
+        return []
+
+    rpm_reading = report.readings.get("RPM")
+    running = bool(rpm_reading and isinstance(rpm_reading.value, (int, float))
+                   and rpm_reading.value > 400)
+
+    if running and voltage < 13.0:
+        return [Finding(
+            "serious",
+            f"Charging voltage is low ({voltage:.1f} V)",
+            "With the engine running the system should sit between 13.5 V and "
+            "14.8 V. Below 13 V the alternator is not keeping up and the battery "
+            "is being drained as you drive.",
+            "Check the drive belt, then have the alternator output tested.",
+        )]
+    if voltage > 15.0:
+        return [Finding(
+            "serious",
+            f"Charging voltage is high ({voltage:.1f} V)",
+            "Above 15 V the regulator is overcharging, which boils the battery "
+            "and can damage electronics.",
+            "Have the alternator's voltage regulator checked.",
+        )]
+    if not running and voltage < 12.2:
+        return [Finding(
+            "moderate",
+            f"Battery voltage is low ({voltage:.1f} V)",
+            "A rested, healthy 12 V battery reads about 12.6 V. 12.2 V is roughly "
+            "half charged.",
+            "Charge it and have the battery load-tested before winter.",
+        )]
+    return []
+
+
+def _analyse_fuel_trims(report: HealthReport) -> list[Finding]:
+    findings = []
+    banks = [
+        ("bank 1", "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1"),
+        ("bank 2", "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2"),
+    ]
+
+    for label, short_key, long_key in banks:
+        short = report.readings.get(short_key)
+        long = report.readings.get(long_key)
+        if long is None:
+            continue
+
+        total = long.value + (short.value if short else 0.0)
+        if total > 15.0:
+            findings.append(Finding(
+                "moderate",
+                f"Fuel trims are high on {label} (+{total:.0f} %)",
+                "The ECU is adding well over 10 % extra fuel to hold the mixture "
+                "correct, which means it is seeing more air than it expects or "
+                "getting less fuel than it commands. Sustained lean running "
+                "raises combustion temperatures.",
+                "Check for a vacuum leak first - intake gaskets, PCV and brake "
+                "servo hoses - then the MAF sensor and fuel filter.",
+            ))
+        elif total < -15.0:
+            findings.append(Finding(
+                "moderate",
+                f"Fuel trims are low on {label} ({total:.0f} %)",
+                "The ECU is pulling fuel out to stop the mixture running rich. "
+                "Prolonged rich running washes oil off the bores and can damage "
+                "the catalytic converter.",
+                "Check for a leaking injector, a stuck fuel pressure regulator, or "
+                "a clogged air filter.",
+            ))
+    return findings
+
+
+def _analyse_temperatures(report: HealthReport) -> list[Finding]:
+    findings = []
+
+    coolant = report.readings.get("COOLANT_TEMP")
+    run_time = report.readings.get("RUN_TIME")
+
+    if coolant is not None and isinstance(coolant.value, (int, float)):
+        if coolant.value > 110:
+            findings.append(Finding(
+                "critical",
+                f"Engine is overheating ({coolant.value} degC)",
+                "Coolant above 110 degC risks warping the head and destroying "
+                "the head gasket.",
+                "Stop driving. Let it cool, then check coolant level, the fan and "
+                "the water pump before restarting.",
+            ))
+        elif coolant.value > 103:
+            findings.append(Finding(
+                "serious",
+                f"Coolant temperature is high ({coolant.value} degC)",
+                "Most engines hold 85-100 degC. Running hotter than that under "
+                "normal load points at a cooling system problem.",
+                "Check coolant level and that the radiator fan cuts in.",
+            ))
+        elif (run_time is not None and isinstance(run_time.value, (int, float))
+              and run_time.value > 600 and coolant.value < 70):
+            findings.append(Finding(
+                "moderate",
+                f"Engine is not reaching operating temperature ({coolant.value} degC)",
+                f"After {int(run_time.value / 60)} minutes of running the coolant is "
+                "still below 70 degC. A thermostat stuck open costs fuel economy "
+                "and accelerates engine wear.",
+                "Replace the thermostat; this is the usual cause and is a cheap fix.",
+            ))
+
+    oil = report.readings.get("OIL_TEMP")
+    if oil is not None and isinstance(oil.value, (int, float)) and oil.value > 130:
+        findings.append(Finding(
+            "serious",
+            f"Oil temperature is high ({oil.value} degC)",
+            "Above about 130 degC oil oxidises quickly and loses film strength.",
+            "Check oil level and grade, and the oil cooler if one is fitted.",
+        ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def status_dict(status: MonitorStatus | None) -> dict | None:
+    if status is None:
+        return None
+    return {
+        "mil_on": status.mil_on,
+        "dtc_count": status.dtc_count,
+        "compression_ignition": status.compression_ignition,
+        "monitors": dict(status.monitors),
+        "not_ready": status.not_ready,
+        "emissions_ready": status.emissions_ready,
+    }
+
+
+def plain_value(value: Any) -> Any:
+    """Convert a decoded value into something JSON can hold."""
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {key: plain_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [plain_value(item) for item in value]
+    if isinstance(value, MonitorStatus):
+        return status_dict(value)
+    return str(value)
