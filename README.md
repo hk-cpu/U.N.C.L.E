@@ -16,6 +16,42 @@ before you go near the driveway.
 cardiag --sim --sim-profile charger-misfire scan
 ```
 
+### The app
+
+`cardiag ui` opens a browser interface — the same engine, with a screen:
+
+```bash
+cardiag ui
+```
+
+It starts a local server and opens `http://127.0.0.1:8765/`. Five tabs:
+
+- **Connect** — pick your adapter from a list, or click a simulated car to try
+  it with no hardware.
+- **Health** — the full diagnosis: findings ranked worst-first, each with what
+  to check, plus readiness monitors, live data and the freeze frame.
+- **Live** — stat tiles with meters and sparklines, one per parameter. Values
+  that leave their normal band turn amber or red, so a lean bank is visible at
+  a glance instead of needing to be spotted in a column of numbers.
+- **Codes** — trouble codes with likely causes and model-specific notes, and a
+  Clear button that explains what clearing costs before it does it.
+- **Vehicle** — the decoded VIN and everything the profile knows about your
+  engine.
+
+It follows your system light/dark setting, with a toggle, and the layout works
+on a phone.
+
+Nothing is sent anywhere: the server runs on your machine and talks to your
+adapter. It binds to localhost only, so nothing else on the network can reach
+it. To open it on your phone while the laptop is in the car, bind wider:
+
+```bash
+cardiag ui --host 0.0.0.0
+```
+
+That prints a URL containing a token, which is then required — the API can
+erase your trouble codes, so it is not left open.
+
 ### Vehicle profiles
 
 Generic OBD-II tells you "cylinder 4 is misfiring". A profile turns that into
@@ -116,6 +152,7 @@ things. For live data, have the engine running.
 
 | Command | What it does |
 | --- | --- |
+| `cardiag ui` | Browser interface — everything below, with a screen |
 | `cardiag scan` | Full health check with findings (the default) |
 | `cardiag codes` | Trouble codes with likely causes |
 | `cardiag lookup P0420` | Explain a code — works offline, no car needed |
@@ -190,6 +227,7 @@ with Session("sim://?profile=faulty") as car:
 
 ```
 cli.py            argparse front end, output formatting
+  web/            browser UI: stdlib HTTP server, JSON API, static page
   dashboard.py    live terminal view
   report.py       findings: turns readings into "here is what to check"
   logger.py       CSV and SQLite recording

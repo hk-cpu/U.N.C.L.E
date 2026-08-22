@@ -100,8 +100,19 @@ class HealthReport:
                 }
                 for name, reading in self.readings.items()
             },
+            # Each entry carries its own label so consumers do not have to map
+            # PID names back to descriptions themselves.
             "freeze_frame": {
-                key: (value.pid.format(value.value) if isinstance(value, Reading) else value)
+                key: {
+                    "description": (
+                        value.pid.description if isinstance(value, Reading)
+                        else key.replace("_", " ")
+                    ),
+                    "formatted": (
+                        value.pid.format(value.value) if isinstance(value, Reading)
+                        else str(value)
+                    ),
+                }
                 for key, value in self.freeze_frame.items()
             },
             "findings": [finding.to_dict() for finding in self.findings],

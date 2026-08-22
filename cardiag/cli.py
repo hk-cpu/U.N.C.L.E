@@ -117,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = sub.add_parser("lookup", help="explain a trouble code (no car needed)")
     lookup.add_argument("codes", nargs="+", help="codes such as P0420")
 
+    ui = sub.add_parser("ui", help="open the browser interface")
+    ui.add_argument("--host", default="127.0.0.1",
+                    help="address to bind (default: 127.0.0.1, this machine only)")
+    ui.add_argument("--ui-port", type=int, default=8765, dest="ui_port",
+                    help="port to listen on (default: 8765)")
+    ui.add_argument("--no-browser", action="store_true",
+                    help="do not open a browser window")
+
     sub.add_parser("vehicle", help="show what cardiag knows about this model")
 
     decode = sub.add_parser("vin", help="decode a VIN")
@@ -163,6 +171,9 @@ def _run(argv: list[str] | None) -> int:
         return _command_vin(args, session=None)
     if command == "vehicle" and args.profile_object is not None:
         return _command_vehicle(args, session=None)
+    if command == "ui":
+        # The UI manages its own connection, so it does not take one from here.
+        return _command_ui(args)
 
     try:
         url = _connection_url(args)
@@ -626,6 +637,19 @@ def _command_freeze(args: argparse.Namespace, session: Session) -> int:
         (value.pid.description, value.pid.format(value.value))
         for value in frame.values() if isinstance(value, Reading)
     ]))
+    return 0
+
+
+def _command_ui(args: argparse.Namespace) -> int:
+    from .web.server import run
+
+    try:
+        run(host=args.host, port=args.ui_port, open_browser=not args.no_browser)
+    except OSError as exc:
+        return _fail(
+            f"could not start the UI on {args.host}:{args.ui_port}: {exc}\n"
+            "Another copy may already be running; try --ui-port 8766."
+        )
     return 0
 
 

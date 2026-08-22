@@ -1,0 +1,394 @@
+/* cardiag UI.
+   Colours come from the validated reference palette: chart surfaces and ink for
+   chrome, the fixed status palette for severity. Status colour never carries
+   meaning alone - every badge ships an icon and a word. */
+
+:root {
+  color-scheme: light;
+
+  --page:            #f9f9f7;
+  --surface:         #fcfcfb;
+  --surface-sunk:    #f2f1ed;
+  --ink:             #0b0b0b;
+  --ink-2:           #52514e;
+  --muted:           #898781;
+  --grid:            #e1e0d9;
+  --rule:            #c3c2b7;
+  --border:          rgba(11, 11, 11, 0.10);
+
+  --accent:          #2a78d6;
+  --accent-soft:     #cde2fb;
+  --accent-ink:      #ffffff;
+
+  /* Status palette - fixed, never themed. */
+  --good:            #0ca30c;
+  --warning:         #fab219;
+  --serious:         #ec835a;
+  --critical:        #d03b3b;
+  --advisory:        #2a78d6;
+
+  --good-wash:       rgba(12, 163, 12, 0.10);
+  --warning-wash:    rgba(250, 178, 25, 0.14);
+  --serious-wash:    rgba(236, 131, 90, 0.14);
+  --critical-wash:   rgba(208, 59, 59, 0.12);
+  --advisory-wash:   rgba(42, 120, 214, 0.10);
+
+  --radius:          10px;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:         #0d0d0d;
+    --surface:      #1a1a19;
+    --surface-sunk: #131312;
+    --ink:          #ffffff;
+    --ink-2:        #c3c2b7;
+    --muted:        #898781;
+    --grid:         #2c2c2a;
+    --rule:         #383835;
+    --border:       rgba(255, 255, 255, 0.10);
+    --accent:       #3987e5;
+    --accent-soft:  #0d366b;
+    --advisory:     #3987e5;
+    --good-wash:     rgba(12, 163, 12, 0.16);
+    --warning-wash:  rgba(250, 178, 25, 0.16);
+    --serious-wash:  rgba(236, 131, 90, 0.16);
+    --critical-wash: rgba(208, 59, 59, 0.18);
+    --advisory-wash: rgba(57, 135, 229, 0.16);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:         #0d0d0d;
+  --surface:      #1a1a19;
+  --surface-sunk: #131312;
+  --ink:          #ffffff;
+  --ink-2:        #c3c2b7;
+  --muted:        #898781;
+  --grid:         #2c2c2a;
+  --rule:         #383835;
+  --border:       rgba(255, 255, 255, 0.10);
+  --accent:       #3987e5;
+  --accent-soft:  #0d366b;
+  --advisory:     #3987e5;
+  --good-wash:     rgba(12, 163, 12, 0.16);
+  --warning-wash:  rgba(250, 178, 25, 0.16);
+  --serious-wash:  rgba(236, 131, 90, 0.16);
+  --critical-wash: rgba(208, 59, 59, 0.18);
+  --advisory-wash: rgba(57, 135, 229, 0.16);
+}
+
+* { box-sizing: border-box; }
+
+/* The hidden attribute must beat any display rule that follows it. Without
+   this a hidden flex/grid element still lays out and can swallow clicks. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
+h3 { font-size: 1rem; margin: 0 0 .35rem; }
+p  { margin: 0 0 .7rem; }
+.muted { color: var(--muted); }
+.plain { list-style: none; padding: 0; margin: 0; }
+
+/* -- top bar ------------------------------------------------------------ */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .7rem 1.1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.brand { display: flex; align-items: center; gap: .5rem; font-weight: 650; }
+.brand-mark {
+  width: 12px; height: 12px; border-radius: 3px;
+  background: var(--accent);
+}
+.brand-name { letter-spacing: -.01em; }
+
+.link-state {
+  margin-left: auto;
+  display: flex; align-items: center; gap: .45rem;
+  color: var(--ink-2); font-size: .88rem;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot-off { background: var(--muted); }
+.dot-on  { background: var(--good); }
+.topbar-actions { display: flex; gap: .4rem; }
+
+/* -- tabs --------------------------------------------------------------- */
+.tabs {
+  display: flex; gap: .15rem;
+  padding: 0 1.1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.tab {
+  appearance: none; background: none; border: 0;
+  border-bottom: 2px solid transparent;
+  padding: .6rem .8rem; margin-bottom: -1px;
+  font: inherit; font-size: .92rem; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.tab:hover:not(:disabled) { color: var(--ink); }
+.tab.is-active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tab:disabled { opacity: .4; cursor: not-allowed; }
+
+/* -- layout ------------------------------------------------------------- */
+main { padding: 1.2rem 1.1rem 3rem; max-width: 1100px; margin: 0 auto; }
+.view { display: none; }
+.view.is-active { display: block; }
+.stack { display: grid; gap: 1rem; max-width: 620px; }
+.view-head {
+  display: flex; align-items: center; gap: .7rem;
+  margin-bottom: 1rem; flex-wrap: wrap;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem;
+}
+.card-quiet { background: var(--surface-sunk); }
+
+/* -- form --------------------------------------------------------------- */
+.field { margin: .9rem 0; }
+.field > label {
+  display: block; font-size: .85rem; font-weight: 600;
+  color: var(--ink-2); margin-bottom: .3rem;
+}
+.row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.row-end { justify-content: flex-end; }
+.hint { font-size: .82rem; color: var(--muted); margin: .35rem 0 0; }
+
+select, input[type="text"] {
+  font: inherit;
+  padding: .5rem .6rem;
+  background: var(--page);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+select:focus-visible, input:focus-visible, .btn:focus-visible, .tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn {
+  appearance: none; font: inherit; font-size: .9rem; font-weight: 550;
+  padding: .5rem .9rem; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
+}
+.btn:hover:not(:disabled) { border-color: var(--muted); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-danger { background: var(--critical); border-color: var(--critical); color: #fff; }
+.btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-quiet { background: transparent; }
+
+.chip-row { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .6rem; }
+.chip {
+  appearance: none; font: inherit; font-size: .84rem;
+  padding: .35rem .7rem; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--ink-2);
+}
+.chip:hover { border-color: var(--accent); color: var(--ink); }
+
+/* -- alerts & badges ---------------------------------------------------- */
+.alert {
+  border-radius: 8px; padding: .65rem .8rem; font-size: .89rem;
+  border-left: 3px solid var(--muted); background: var(--surface-sunk);
+  margin: .7rem 0;
+}
+.alert-critical { border-left-color: var(--critical); background: var(--critical-wash); }
+.alert-warning  { border-left-color: var(--warning);  background: var(--warning-wash); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .74rem; font-weight: 650; letter-spacing: .02em;
+  text-transform: uppercase;
+  padding: .16rem .5rem; border-radius: 999px;
+  border: 1px solid currentColor;
+  flex: none;
+}
+.badge-icon { font-size: .8em; }
+.sev-critical { color: var(--critical); background: var(--critical-wash); }
+.sev-serious  { color: var(--serious);  background: var(--serious-wash); }
+.sev-moderate { color: var(--warning);  background: var(--warning-wash); }
+.sev-advisory { color: var(--advisory); background: var(--advisory-wash); }
+.sev-info     { color: var(--good);     background: var(--good-wash); }
+
+/* -- hero (exactly one per view) ---------------------------------------- */
+.hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.1rem;
+}
+.hero-critical { border-left-color: var(--critical); }
+.hero-serious  { border-left-color: var(--serious); }
+.hero-moderate { border-left-color: var(--warning); }
+.hero-advisory { border-left-color: var(--advisory); }
+.hero-info     { border-left-color: var(--good); }
+.hero-headline { font-size: 1.55rem; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+.hero-sub { color: var(--muted); font-size: .87rem; margin: .3rem 0 0; }
+
+/* -- findings ----------------------------------------------------------- */
+.finding {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .9rem 1rem;
+  margin-bottom: .6rem;
+}
+.finding-head { display: flex; align-items: flex-start; gap: .6rem; margin-bottom: .4rem; }
+.finding-title { font-weight: 620; }
+.finding-detail { color: var(--ink-2); font-size: .92rem; margin: 0; }
+.finding-suggest {
+  margin: .55rem 0 0; padding: .5rem .7rem;
+  background: var(--surface-sunk); border-radius: 7px;
+  font-size: .88rem; color: var(--ink-2);
+}
+
+/* -- section blocks ----------------------------------------------------- */
+.section { margin-top: 1.6rem; }
+.section > h3 {
+  font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin-bottom: .5rem; font-weight: 650;
+}
+
+table.data { width: 100%; border-collapse: collapse; font-size: .9rem; }
+table.data td { padding: .4rem .6rem; border-bottom: 1px solid var(--grid); }
+table.data tr:last-child td { border-bottom: 0; }
+table.data td:first-child { color: var(--ink-2); }
+table.data td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap {
+  overflow-x: auto; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+/* -- live tiles --------------------------------------------------------- */
+.tiles {
+  display: grid; gap: .7rem;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .8rem .9rem;
+}
+.tile-label {
+  font-size: .8rem; color: var(--ink-2); margin-bottom: .15rem;
+  display: flex; align-items: center; gap: .35rem;
+}
+.tile-value {
+  font-size: 1.7rem; font-weight: 620; letter-spacing: -.02em;
+  line-height: 1.15; margin-bottom: .1rem;
+}
+.tile-value .unit { font-size: .55em; font-weight: 500; color: var(--muted); margin-left: .15em; }
+.tile-stale { opacity: .45; }
+
+/* Meter: fill carries severity, track is a lighter step of the same ramp. */
+.meter {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--accent-soft); margin: .45rem 0 .3rem;
+}
+.meter-fill {
+  height: 100%; border-radius: 3px; background: var(--accent);
+  transition: width .18s linear;
+}
+.meter-good .meter-fill     { background: var(--accent); }
+.meter-warning .meter-fill  { background: var(--warning); }
+.meter-critical .meter-fill { background: var(--critical); }
+.meter-warning  { background: var(--warning-wash); }
+.meter-critical { background: var(--critical-wash); }
+
+.tile-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: .74rem; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.spark { display: block; width: 100%; height: 26px; margin-top: .3rem; }
+
+/* -- code cards --------------------------------------------------------- */
+.code-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: .9rem 1rem; margin-bottom: .6rem;
+}
+.code-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.code-id { font-family: var(--mono); font-size: 1.05rem; font-weight: 650; }
+.code-desc { font-weight: 550; }
+.code-meta { font-size: .8rem; color: var(--muted); margin: .3rem 0 0; }
+.causes { margin: .6rem 0 0; padding-left: 1.1rem; font-size: .9rem; color: var(--ink-2); }
+.causes li { margin-bottom: .18rem; }
+.note {
+  margin: .55rem 0 0; padding: .5rem .7rem; border-radius: 7px;
+  background: var(--advisory-wash); font-size: .88rem; color: var(--ink-2);
+  border-left: 3px solid var(--advisory);
+}
+
+/* -- modal & toast ------------------------------------------------------ */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 20;
+  background: rgba(0, 0, 0, .5);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+/* `display` beats the hidden attribute, so restate it - otherwise the closed
+   backdrop still covers the page and eats every click. */
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  background: var(--surface); border-radius: var(--radius);
+  padding: 1.2rem; max-width: 460px; width: 100%;
+  border: 1px solid var(--border);
+}
+.toast {
+  position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--page);
+  padding: .6rem 1rem; border-radius: 999px; font-size: .88rem;
+  z-index: 30; box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+}
+
+.spinner {
+  display: inline-block; width: 13px; height: 13px;
+  border: 2px solid var(--accent-soft); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .7s linear infinite;
+  vertical-align: -2px; margin-right: .4rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+  .meter-fill { transition: none; }
+}
+
+@media (max-width: 560px) {
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .tile-value { font-size: 1.4rem; }
+  main { padding: 1rem .7rem 3rem; }
+  .link-state span:not(.dot) { display: none; }
+}

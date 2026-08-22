@@ -32,6 +32,11 @@ cardiag = "cardiag.cli:main"
 [tool.setuptools.packages.find]
 include = ["cardiag*"]
 
+[tool.setuptools.package-data]
+# The UI's static files ship inside the package; without this they are left
+# out of a wheel and `cardiag ui` serves 404s.
+cardiag = ["web/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

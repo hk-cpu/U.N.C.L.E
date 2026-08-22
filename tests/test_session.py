@@ -171,7 +171,9 @@ def test_report_serialises_to_json_safe_types(faulty):
     payload = report_module.build(faulty).to_dict()
     json.dumps(payload)      # must not raise
     assert payload["status"]["mil_on"] is True
-    assert payload["freeze_frame"]["trigger_code"] == "P0301"
+    assert payload["freeze_frame"]["trigger_code"]["formatted"] == "P0301"
+    # Every entry carries a human label, not just a raw PID name.
+    assert payload["freeze_frame"]["RPM"]["description"] == "Engine speed"
 
 
 def test_emissions_profile_is_flagged_as_not_ready():
