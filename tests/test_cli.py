@@ -325,3 +325,53 @@ def test_fix_json(capsys):
     assert payload["key"] == "oil-pressure"
     assert len(payload["procedure"]) == 3
     assert any(step["caution"] for step in payload["procedure"])
+
+
+# ---------------------------------------------------------------------------
+# Running as an app
+# ---------------------------------------------------------------------------
+
+def test_app_and_ui_are_both_commands(capsys):
+    from cardiag.cli import build_parser
+
+    parser = build_parser()
+    actions = [a for a in parser._actions if a.dest == "command"]
+    names = set(actions[0].choices)
+    assert {"ui", "app", "install-launcher"} <= names
+
+
+def test_app_command_asks_for_a_window(monkeypatch):
+    from cardiag import cli
+
+    seen = {}
+
+    def fake_run(host, port, open_browser, app_window):
+        seen.update(host=host, port=port, app_window=app_window)
+
+    import cardiag.web.server as server_module
+    monkeypatch.setattr(server_module, "run", fake_run)
+
+    assert cli.main(["app", "--no-browser"]) == 0
+    assert seen["app_window"] is True
+
+    assert cli.main(["ui", "--no-browser"]) == 0
+    assert seen["app_window"] is False
+
+
+def test_install_launcher_command(capsys, tmp_path, monkeypatch):
+    from cardiag.web import launcher
+
+    monkeypatch.setattr(launcher.Path, "home", classmethod(lambda cls: tmp_path))
+    code, out = run(capsys, "install-launcher")
+    assert code == 0
+    assert "Created" in out
+
+
+def test_install_launcher_json(capsys, tmp_path, monkeypatch):
+    from cardiag.web import launcher
+
+    monkeypatch.setattr(launcher.Path, "home", classmethod(lambda cls: tmp_path))
+    code, out = run(capsys, "--json", "install-launcher")
+    payload = json.loads(out)
+    assert code == 0
+    assert payload["path"].endswith((".desktop", ".command", ".bat"))

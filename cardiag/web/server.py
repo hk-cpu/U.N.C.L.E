@@ -25,7 +25,14 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
     ".json": "application/json",
+    ".png": "image/png",
+    ".webmanifest": "application/manifest+json",
 }
+
+#: Files a browser only honours when they are served fresh. The service worker
+#: in particular must never be served from the HTTP cache, or a stale one can
+#: pin an old app shell in place.
+NO_CACHE_FILES = {"sw.js", "index.html", "manifest.webmanifest"}
 
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -63,11 +70,18 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Cardiag-Token") or (query.get("token") or [None])[0]
         return bool(supplied) and secrets.compare_digest(supplied, token)
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(self, status: int, body: bytes, content_type: str,
+              extra_headers: dict[str, str] | None = None,
+              cacheable: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # Icons and stylesheets are fine to cache briefly; anything carrying
+        # vehicle data, and anything that controls the app shell, is not.
+        self.send_header("Cache-Control",
+                         "max-age=3600" if cacheable else "no-store")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         # The UI is served from this same origin; nothing else needs access.
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
@@ -207,7 +221,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         content_type = CONTENT_TYPES.get(target.suffix, "application/octet-stream")
-        self._send(HTTPStatus.OK, target.read_bytes(), content_type)
+        headers = {}
+        if target.name == "sw.js":
+            # Without this the worker's own scope is limited to its directory;
+            # it is served from the root here, so the default is already right,
+            # but stating it makes the intent explicit if the layout moves.
+            headers["Service-Worker-Allowed"] = "/"
+        self._send(HTTPStatus.OK, target.read_bytes(), content_type,
+                   extra_headers=headers,
+                   cacheable=target.name not in NO_CACHE_FILES)
 
 
 def _list_ports() -> list[dict]:
@@ -242,18 +264,19 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     return server, url
 
 
-def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
-    """Blocking entry point used by ``cardiag ui``."""
+def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+        app_window: bool = False) -> None:
+    """Blocking entry point used by ``cardiag ui`` and ``cardiag app``."""
     server, url = serve(host=host, port=port)
 
-    print(f"cardiag UI running at {url}")
+    print(f"cardiag running at {url}")
     if server.token:
         print("Reachable from other devices on this network; the token above is "
               "required. Anyone with it can clear your trouble codes.")
     print("Press Ctrl-C to stop.")
 
     if open_browser:
-        threading.Timer(0.4, _open, args=(url,)).start()
+        threading.Timer(0.4, _open, args=(url, app_window)).start()
 
     try:
         server.serve_forever()
@@ -265,10 +288,9 @@ def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) ->
         server.server_close()
 
 
-def _open(url: str) -> None:
-    import webbrowser
+def _open(url: str, app_window: bool = False) -> None:
+    from .launcher import open_browser
 
-    try:
-        webbrowser.open(url)
-    except Exception:                                  # headless box, no browser
-        pass
+    how = open_browser(url, app_window=app_window)
+    if how == "not opened":
+        print("Could not open a browser automatically - open the address above.")

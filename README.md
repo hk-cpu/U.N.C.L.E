@@ -18,13 +18,34 @@ cardiag --sim --sim-profile charger-misfire scan
 
 ### The app
 
-`cardiag ui` opens a browser interface — the same engine, with a screen:
-
 ```bash
-cardiag ui
+cardiag app
 ```
 
-It starts a local server and opens `http://127.0.0.1:8765/`. Seven tabs:
+Opens in its own window — no address bar, no tabs, its own icon in the dock or
+taskbar. `cardiag ui` does the same thing in an ordinary browser tab if you
+prefer that.
+
+To stop typing commands entirely:
+
+```bash
+cardiag install-launcher
+```
+
+That adds cardiag to your applications menu (Start menu on Windows,
+`~/Applications` on macOS), so it starts with a click like anything else.
+
+**Install it properly.** With the app open, use the *Install* button in the
+toolbar — or your browser's install option. It then behaves as a real
+installed application: its own icon, its own window, launched from wherever you
+launch everything else. The shell is cached, so it opens instantly and still
+opens if the server is not running (it will tell you it cannot reach the car
+rather than showing stale readings — vehicle data is never cached).
+
+The manifest also registers shortcuts, so a long-press or right-click on the
+icon jumps straight to Health, Live or Codes.
+
+Seven tabs:
 
 - **Connect** — pick your adapter from a list, or click a simulated car to try
   it with no hardware.
@@ -44,16 +65,28 @@ It starts a local server and opens `http://127.0.0.1:8765/`. Seven tabs:
 It follows your system light/dark setting, with a toggle, and the layout works
 on a phone.
 
-Nothing is sent anywhere: the server runs on your machine and talks to your
-adapter. It binds to localhost only, so nothing else on the network can reach
-it. To open it on your phone while the laptop is in the car, bind wider:
+#### Using it from your phone
+
+The adapter plugs into a laptop, so the laptop runs the app and the phone is
+the screen:
 
 ```bash
-cardiag ui --host 0.0.0.0
+cardiag app --host 0.0.0.0
 ```
 
-That prints a URL containing a token, which is then required — the API can
-erase your trouble codes, so it is not left open.
+That prints a URL with a token in it — open that on your phone, on the same
+WiFi. The token is required from anything that is not the laptop itself,
+because the API can erase your trouble codes.
+
+One honest limitation: browsers only allow an app to be *installed* from a
+secure context. `localhost` counts as one, so installing on the laptop works.
+A plain `http://192.168.x.x` address over your network does not, so Android
+Chrome will not offer the install prompt there — the page works normally, it
+just stays a page. On iOS, Safari's *Add to Home Screen* still gives you an
+icon.
+
+Nothing is sent anywhere. The server runs on your machine and talks to your
+adapter; it binds to localhost unless you ask otherwise.
 
 ### Catching it before it breaks
 
@@ -244,7 +277,9 @@ things. For live data, have the engine running.
 
 | Command | What it does |
 | --- | --- |
-| `cardiag ui` | Browser interface — everything below, with a screen |
+| `cardiag app` | The app, in its own window |
+| `cardiag ui` | The same thing in a browser tab |
+| `cardiag install-launcher` | Add it to your applications menu |
 | `cardiag scan` | Full health check with findings (the default) |
 | `cardiag codes` | Trouble codes with likely causes |
 | `cardiag misfires` | Per-cylinder misfire counters |
@@ -326,7 +361,7 @@ with Session("sim://?profile=faulty") as car:
 
 ```
 cli.py            argparse front end, output formatting
-  web/            browser UI: stdlib HTTP server, JSON API, static page
+  web/            the app: stdlib HTTP server, JSON API, installable page
   dashboard.py    live terminal view
   report.py       findings: turns readings into "here is what to check"
   logger.py       CSV and SQLite recording

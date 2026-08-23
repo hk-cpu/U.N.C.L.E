@@ -385,3 +385,101 @@ def test_http_baseline_compare_needs_an_id(http):
     http("/api/connect", {"url": CHARGER})
     status, _ = http("/api/baselines/compare", {})
     assert status == 400
+
+
+# ---------------------------------------------------------------------------
+# Installable app: manifest, icons, service worker
+# ---------------------------------------------------------------------------
+
+def test_manifest_is_served_with_the_right_type(http):
+    request = urllib.request.Request(http.base + "/manifest.webmanifest")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "application/manifest+json"
+        manifest = json.loads(response.read())
+
+    assert manifest["display"] == "standalone"
+    assert manifest["start_url"] == "/"
+    purposes = {icon["purpose"] for icon in manifest["icons"]}
+    assert "maskable" in purposes and "any" in purposes
+
+
+def test_manifest_shortcuts_point_at_real_views(http):
+    with urllib.request.urlopen(http.base + "/manifest.webmanifest", timeout=10) as r:
+        manifest = json.loads(r.read())
+
+    for shortcut in manifest["shortcuts"]:
+        assert shortcut["url"].startswith("/?view=")
+
+
+def test_icons_are_valid_pngs(http):
+    for name in ("icon-192.png", "icon-512.png", "icon-maskable-512.png",
+                 "apple-touch-icon.png"):
+        with urllib.request.urlopen(f"{http.base}/{name}", timeout=10) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read(8) == b"\x89PNG\r\n\x1a\n"
+
+
+def test_service_worker_is_served_uncached_and_root_scoped(http):
+    with urllib.request.urlopen(http.base + "/sw.js", timeout=10) as response:
+        assert response.status == 200
+        assert response.headers["Service-Worker-Allowed"] == "/"
+        # A cached service worker can pin an old app shell in place.
+        assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_the_page_links_the_manifest_and_apple_icon(http):
+    with urllib.request.urlopen(http.base + "/", timeout=10) as response:
+        body = response.read().decode()
+
+    assert 'rel="manifest"' in body
+    assert 'rel="apple-touch-icon"' in body
+    assert 'name="theme-color"' in body
+
+
+def test_static_assets_may_be_cached_but_vehicle_data_never_is(http):
+    with urllib.request.urlopen(http.base + "/icon-192.png", timeout=10) as response:
+        assert "max-age" in response.headers["Cache-Control"]
+
+    with urllib.request.urlopen(http.base + "/api/status", timeout=10) as response:
+        assert response.headers["Cache-Control"] == "no-store"
+
+
+# ---------------------------------------------------------------------------
+# Launcher
+# ---------------------------------------------------------------------------
+
+def test_launcher_writes_a_desktop_entry(tmp_path, monkeypatch):
+    from cardiag.web import launcher
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(launcher.Path, "home", classmethod(lambda cls: tmp_path))
+
+    path, note = launcher.install_launcher()
+    assert path.exists()
+    assert note
+
+    content = path.read_text()
+    # Whatever the platform, the shortcut has to name the app command.
+    assert "cardiag" in content
+    assert "app" in content
+
+
+def test_app_browser_detection_does_not_raise():
+    from cardiag.web.launcher import find_app_browser
+
+    # Either a browser is present or it is not; neither may explode.
+    assert find_app_browser() is None or isinstance(find_app_browser(), str)
+
+
+def test_open_browser_reports_how_it_opened(monkeypatch):
+    from cardiag.web import launcher
+
+    monkeypatch.setattr(launcher, "open_app_window", lambda url: True)
+    assert launcher.open_browser("http://x", app_window=True) == "app window"
+
+    monkeypatch.setattr(launcher, "open_app_window", lambda url: False)
+    monkeypatch.setitem(__import__("sys").modules, "webbrowser",
+                        type("W", (), {"open": staticmethod(lambda url: True)}))
+    assert launcher.open_browser("http://x", app_window=True) == "browser tab"

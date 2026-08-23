@@ -122,13 +122,24 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = sub.add_parser("lookup", help="explain a trouble code (no car needed)")
     lookup.add_argument("codes", nargs="+", help="codes such as P0420")
 
-    ui = sub.add_parser("ui", help="open the browser interface")
-    ui.add_argument("--host", default="127.0.0.1",
-                    help="address to bind (default: 127.0.0.1, this machine only)")
-    ui.add_argument("--ui-port", type=int, default=8765, dest="ui_port",
-                    help="port to listen on (default: 8765)")
-    ui.add_argument("--no-browser", action="store_true",
-                    help="do not open a browser window")
+    for name, description in (
+        ("ui", "open the interface in a browser tab"),
+        ("app", "open the interface as an app, in its own window"),
+    ):
+        window = sub.add_parser(name, help=description)
+        window.add_argument(
+            "--host", default="127.0.0.1",
+            help="address to bind (default: 127.0.0.1, this machine only)")
+        window.add_argument(
+            "--ui-port", type=int, default=8765, dest="ui_port",
+            help="port to listen on (default: 8765)")
+        window.add_argument(
+            "--no-browser", action="store_true",
+            help="start the server but do not open anything")
+
+    sub.add_parser(
+        "install-launcher",
+        help="add cardiag to your applications menu, so it opens with a click")
 
     monitors06 = sub.add_parser(
         "tests", help="mode 06 monitor results, including per-cylinder misfires")
@@ -204,9 +215,11 @@ def _run(argv: list[str] | None) -> int:
         return _command_vin(args, session=None)
     if command == "vehicle" and args.profile_object is not None:
         return _command_vehicle(args, session=None)
-    if command == "ui":
+    if command in ("ui", "app"):
         # The UI manages its own connection, so it does not take one from here.
-        return _command_ui(args)
+        return _command_ui(args, app_window=command == "app")
+    if command == "install-launcher":
+        return _command_install_launcher(args)
     if command == "fix" and args.profile_object is not None:
         return _command_fix(args, session=None)
 
@@ -999,16 +1012,42 @@ def _command_compare(args: argparse.Namespace, session: Session) -> int:
     return 1 if any(c.direction == "worse" for c in changes) else 0
 
 
-def _command_ui(args: argparse.Namespace) -> int:
+def _command_ui(args: argparse.Namespace, app_window: bool = False) -> int:
     from .web.server import run
 
     try:
-        run(host=args.host, port=args.ui_port, open_browser=not args.no_browser)
+        run(host=args.host, port=args.ui_port,
+            open_browser=not args.no_browser, app_window=app_window)
     except OSError as exc:
         return _fail(
-            f"could not start the UI on {args.host}:{args.ui_port}: {exc}\n"
+            f"could not start cardiag on {args.host}:{args.ui_port}: {exc}\n"
             "Another copy may already be running; try --ui-port 8766."
         )
+    return 0
+
+
+def _command_install_launcher(args: argparse.Namespace) -> int:
+    from .web.launcher import find_app_browser, install_launcher
+
+    try:
+        path, where = install_launcher()
+    except OSError as exc:
+        return _fail(f"could not create the launcher: {exc}")
+
+    if args.json:
+        print(json.dumps({"path": str(path), "note": where}, indent=2))
+        return 0
+
+    print(console.paint(f"Created {path}", "green"))
+    print(where)
+    print()
+    if find_app_browser() is None:
+        print(console.paint(
+            "No Chrome, Edge or Chromium found, so cardiag will open in a normal "
+            "browser tab rather than its own window.", "dim"))
+    else:
+        print(console.paint(
+            "It opens in its own window, without browser chrome.", "dim"))
     return 0
 
 

@@ -22,7 +22,16 @@
     const headers = { "Content-Type": "application/json" };
     if (token) headers["X-Cardiag-Token"] = token;
 
-    const response = await fetch(path, { headers, ...options });
+    let response;
+    try {
+      response = await fetch(path, { headers, ...options });
+    } catch {
+      // The shell is cached, so the app can be open with nothing behind it.
+      throw new Error(
+        "Cannot reach cardiag. The app is running from its offline cache - "
+        + "start it again on the machine with the adapter plugged in.");
+    }
+
     let payload = {};
     try {
       payload = await response.json();
@@ -866,15 +875,57 @@
     }
   }
 
+  /* ------------------------------------------------------ install as app */
+
+  // Chrome fires this instead of showing its own prompt, so the offer lives in
+  // the toolbar where it is visible but not in the way.
+  let installPrompt = null;
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    installPrompt = event;
+    $("install").hidden = false;
+  });
+
+  $("install").addEventListener("click", async () => {
+    if (!installPrompt) return;
+    $("install").hidden = true;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    installPrompt = null;
+  });
+
+  window.addEventListener("appinstalled", () => {
+    $("install").hidden = true;
+    installPrompt = null;
+    toast("Installed — you can open cardiag from your home screen now");
+  });
+
+  // A service worker needs a secure context. localhost counts as one; a plain
+  // http:// address on the network does not, so over the LAN the page still
+  // works but cannot be installed. Failing here must not break the app.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        /* not a secure context, or the browser declined; nothing to do */
+      });
+    });
+  }
+
   /* ---------------------------------------------------------------- boot */
 
   window.addEventListener("beforeunload", () => {
     if (state.sampling) navigator.sendBeacon?.("/api/live/stop");
   });
 
+  const VIEWS = ["connect", "scan", "live", "codes", "tests", "baselines", "vehicle"];
+
   (async () => {
     await loadPorts();
     const status = await refreshStatus();
-    if (status.connected) showView("scan");
+    if (!status.connected) return;
+
+    // App shortcuts arrive as ?view=live and friends.
+    const wanted = new URLSearchParams(location.search).get("view");
+    showView(VIEWS.includes(wanted) ? wanted : "scan");
   })();
 })();
