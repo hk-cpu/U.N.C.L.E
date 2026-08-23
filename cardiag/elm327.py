@@ -198,6 +198,30 @@ class ELM327:
             self._reply_counts[command] = len(payloads)
         return payloads
 
+    def request_records(self, mode: int, pid: int) -> list[bytes]:
+        """Send a request and return each reply with only the mode byte stripped.
+
+        Mode 06 repeats its monitor ID inside every record, so the usual
+        "strip mode and PID" handling would eat the first record's ID and leave
+        the rest misaligned. Callers here parse the records themselves.
+        """
+        command = f"{mode:02X}{pid:02X}"
+        raw = self.transport.command(command, timeout=self.timeout)
+
+        payloads = []
+        for frame in parse_response(raw, echo=command):
+            if not frame:
+                continue
+            if frame[0] == 0x7F:
+                reason = frame[2] if len(frame) > 2 else 0
+                raise ObdError(
+                    f"the ECU rejected mode {mode:02X} "
+                    f"(negative response code 0x{reason:02X})"
+                )
+            if frame[0] == mode + 0x40:
+                payloads.append(frame[1:])
+        return payloads
+
     def clear_codes(self) -> None:
         """Mode 04: erase stored codes, freeze frame and readiness monitors."""
         raw = self.transport.command("04", timeout=max(self.timeout, 8.0))

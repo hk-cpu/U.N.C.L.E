@@ -9,14 +9,23 @@ several plausible causes.
 from __future__ import annotations
 
 import re
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import dtc, vehicles
+from . import dtc, mode06, vehicles
 from .session import Reading, Session, VehicleInfo
 from .pids import MonitorStatus
 from .vehicles import VehicleProfile
+
+#: A monitor this close to its own failure limit is worth mentioning even
+#: though the ECU still calls it a pass.
+HEADROOM_WARNING = 0.85
+
+#: Misfire counters are noisy at low numbers, so a group has to clear this
+#: before a difference between cylinders means anything.
+MISFIRE_FLOOR = 10
 
 #: Misfire codes name their cylinder in the last two digits: P0301 -> 1.
 _MISFIRE = re.compile(r"^P030([1-9A-C])$")
@@ -52,6 +61,10 @@ class HealthReport:
     findings: list[Finding] = field(default_factory=list)
     freeze_frame: dict[str, Any] = field(default_factory=dict)
     profile: VehicleProfile | None = None
+    #: Mode 06 results: what the monitors actually measured.
+    monitor_tests: list[mode06.TestResult] = field(default_factory=list)
+    misfire_counts: dict[int, int] = field(default_factory=dict)
+    calibration: dict[str, list[str]] = field(default_factory=dict)
     generated_at: float = field(default_factory=time.time)
 
     @property
@@ -115,18 +128,25 @@ class HealthReport:
                 }
                 for key, value in self.freeze_frame.items()
             },
+            "monitor_tests": [test.to_dict() for test in self.monitor_tests],
+            "misfire_counts": {str(k): v for k, v in self.misfire_counts.items()},
+            "calibration": dict(self.calibration),
             "findings": [finding.to_dict() for finding in self.findings],
         }
 
 
 def build(session: Session, include_freeze_frame: bool = True,
           profile: VehicleProfile | None = None,
-          detect_profile: bool = True) -> HealthReport:
+          detect_profile: bool = True,
+          include_monitors: bool = True) -> HealthReport:
     """Run a full scan and analyse the result.
 
     When ``profile`` is omitted the vehicle's VIN is used to pick one, so a car
     cardiag knows about gets model-specific advice without being asked. Pass
     ``detect_profile=False`` to force a purely generic report.
+
+    ``include_monitors`` reads mode 06, which is what surfaces a developing
+    fault before it sets a code. It costs a few seconds on a real adapter.
     """
     vehicle = session.vehicle_info()
     status = session.monitor_status()
@@ -141,6 +161,20 @@ def build(session: Session, include_freeze_frame: bool = True,
     if include_freeze_frame and codes:
         freeze = session.freeze_frame()
 
+    tests: list[mode06.TestResult] = []
+    misfires: dict[int, int] = {}
+    calibration: dict[str, list[str]] = {}
+    if include_monitors:
+        tests = session.monitor_tests()
+        misfires = {
+            cylinder: test.raw_value
+            for test in tests
+            if (cylinder := mode06.misfire_cylinder(test.mid)) is not None
+        }
+        if not misfires:
+            misfires = session.misfire_counts()
+        calibration = session.calibration()
+
     report = HealthReport(
         vehicle=vehicle,
         status=status,
@@ -148,6 +182,9 @@ def build(session: Session, include_freeze_frame: bool = True,
         readings=readings,
         freeze_frame=freeze,
         profile=profile,
+        monitor_tests=tests,
+        misfire_counts=misfires,
+        calibration=calibration,
     )
     report.findings = analyse(report)
     return report
@@ -162,6 +199,8 @@ def analyse(report: HealthReport) -> list[Finding]:
 
     findings.extend(_analyse_codes(report))
     findings.extend(_analyse_known_issues(report))
+    findings.extend(_analyse_misfire_counts(report))
+    findings.extend(_analyse_monitor_headroom(report))
     findings.extend(_analyse_monitors(report))
     findings.extend(_analyse_electrical(report))
     findings.extend(_analyse_fuel_trims(report))
@@ -267,6 +306,101 @@ def _analyse_known_issues(report: HealthReport) -> list[Finding]:
             title=f"Known issue on this model: {issue.title}",
             detail=f"Raised by {', '.join(triggering)}. {issue.detail}",
             suggestion=suggestion,
+        ))
+    return findings
+
+
+def _analyse_misfire_counts(report: HealthReport) -> list[Finding]:
+    """Compare the per-cylinder misfire counters against each other.
+
+    A raw count means little on its own - what matters is one cylinder, or one
+    group of cylinders, drifting away from the rest. On an engine with cylinder
+    deactivation the deactivated set shares hardware the others do not, so a
+    skew along that boundary points somewhere specific.
+    """
+    counts = report.misfire_counts
+    if len(counts) < 4:
+        return []
+
+    findings: list[Finding] = []
+    values = list(counts.values())
+    overall = statistics.median(values)
+
+    # A single cylinder standing far above the rest.
+    worst_cylinder = max(counts, key=lambda c: counts[c])
+    worst = counts[worst_cylinder]
+    others = [counts[c] for c in counts if c != worst_cylinder]
+    others_median = statistics.median(others) if others else 0
+
+    if worst >= MISFIRE_FLOOR and worst > max(others_median * 4, others_median + 20):
+        where = ""
+        if report.profile:
+            located = report.profile.engine.locate(worst_cylinder)
+            where = f" On your engine, {located}."
+        findings.append(Finding(
+            "serious",
+            f"Cylinder {worst_cylinder} is misfiring far more than the others "
+            f"({worst} counts against a median of {others_median:.0f})",
+            "The ECU counts misfires per cylinder whether or not it has set a "
+            "code. One cylinder this far above its neighbours is a real fault, "
+            f"not measurement noise.{where}",
+            "Swap that cylinder's coil and plugs with a neighbour, clear the "
+            "counters and re-check. If the count follows the parts, it was "
+            "ignition; if it stays with the cylinder, look at the injector, then "
+            "compression.",
+        ))
+
+    # A skew along the cylinder-deactivation boundary.
+    profile = report.profile
+    if profile and profile.engine.deactivated_cylinders:
+        deactivated = set(profile.engine.deactivated_cylinders)
+        grouped = [counts[c] for c in counts if c in deactivated]
+        ungrouped = [counts[c] for c in counts if c not in deactivated]
+
+        if len(grouped) >= 2 and len(ungrouped) >= 2:
+            on_median = statistics.median(grouped)
+            off_median = statistics.median(ungrouped)
+
+            if (on_median >= MISFIRE_FLOOR
+                    and on_median > max(off_median * 3, off_median + 10)):
+                listed = ", ".join(str(c) for c in sorted(deactivated))
+                findings.append(Finding(
+                    "serious",
+                    "Misfire counts are skewed towards the cylinder-deactivation set",
+                    f"Cylinders {listed} are averaging {on_median:.0f} counts "
+                    f"while the rest average {off_median:.0f}. Those four run "
+                    "different lifters from the others, and this is the pattern "
+                    "their wear produces - it shows up here well before a "
+                    "misfire code is set.",
+                    "Treat this as an early warning rather than an emergency. "
+                    "Listen for a tick that rises with engine speed once warm, "
+                    "and check the oil filter for metal glitter. Catching a "
+                    "lifter before it takes the camshaft lobe with it is the "
+                    "difference between a repair and an engine.",
+                ))
+    return findings
+
+
+def _analyse_monitor_headroom(report: HealthReport) -> list[Finding]:
+    """Flag monitors that still pass but are close to their own limit."""
+    findings = []
+    for test in report.monitor_tests:
+        if test.passed is not True:
+            continue
+        headroom = test.headroom
+        if headroom is None or headroom < HEADROOM_WARNING or not test.known_scaling:
+            continue
+        if mode06.misfire_cylinder(test.mid) is not None:
+            continue        # covered in more useful detail above
+
+        findings.append(Finding(
+            "moderate",
+            f"{test.monitor} is close to failing ({headroom * 100:.0f} % of its limit)",
+            f"The ECU measured {test.format_value()} against {test.format_limits()}. "
+            "It still counts as a pass, so there is no code, but there is very "
+            "little margin left.",
+            "Worth acting on before it trips: once it crosses, the warning light "
+            "comes on and the car fails an emissions test.",
         ))
     return findings
 

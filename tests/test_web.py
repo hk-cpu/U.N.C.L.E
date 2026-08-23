@@ -284,3 +284,104 @@ def test_local_binding_needs_no_token():
         assert "token=" not in url
     finally:
         server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Mode 06, procedures and baselines over the API
+# ---------------------------------------------------------------------------
+
+def test_service_monitor_tests(service):
+    service.connect("sim://?profile=charger-wear")
+    payload = service.monitor_tests()
+
+    assert payload["deactivated_cylinders"] == [1, 4, 6, 7]
+    assert payload["misfire_counts"]["4"] == 28
+    assert any("Catalyst" in t["monitor"] for t in payload["tests"])
+
+
+def test_service_calibration(service):
+    service.connect(CHARGER)
+    assert service.calibration()["calibration_ids"] == ["68RT0057AA"]
+
+
+def test_service_procedures(service):
+    service.connect(CHARGER)
+    payload = service.procedures()
+    keys = {issue["key"] for issue in payload["issues"]}
+    assert {"mds-lifter", "manifold-bolts", "oil-pressure"} <= keys
+    assert all(issue["procedure"] for issue in payload["issues"])
+
+
+def test_service_procedures_without_a_profile(service):
+    service.connect(CHARGER, vehicle="none")
+    assert service.procedures()["issues"] == []
+
+
+def test_service_baselines_round_trip(service, tmp_path):
+    service.baseline_path = tmp_path / "b.db"
+    service.connect("sim://?profile=charger")
+
+    saved = service.save_baseline("before")
+    assert saved["label"] == "before"
+    assert [s["label"] for s in service.list_baselines()["snapshots"]] == ["before"]
+
+    comparison = service.compare_baseline(saved["id"])
+    assert comparison["changes"] == []
+
+    service.delete_baseline(saved["id"])
+    assert service.list_baselines()["snapshots"] == []
+
+
+def test_service_compare_detects_degradation(service, tmp_path):
+    service.baseline_path = tmp_path / "b.db"
+    service.connect("sim://?profile=charger")
+    saved = service.save_baseline("healthy")
+
+    # Reconnect as the worn car; the baseline store persists across it.
+    service.connect("sim://?profile=charger-wear")
+    comparison = service.compare_baseline(saved["id"])
+
+    labels = [c["label"] for c in comparison["changes"]]
+    assert any("cylinder 4" in label for label in labels)
+    assert comparison["changes"][0]["direction"] == "worse"
+
+
+def test_service_compare_rejects_a_missing_snapshot(service, tmp_path):
+    service.baseline_path = tmp_path / "b.db"
+    service.connect(CHARGER)
+    with pytest.raises(ServiceError, match="no snapshot"):
+        service.compare_baseline(999)
+
+
+def test_http_tests_endpoint(http):
+    http("/api/connect", {"url": "sim://?profile=charger-wear"})
+    status, payload = http("/api/tests")
+    assert status == 200
+    assert payload["misfire_counts"]["4"] == 28
+
+
+def test_http_calibration_endpoint(http):
+    http("/api/connect", {"url": CHARGER})
+    status, payload = http("/api/calibration")
+    assert status == 200
+    assert payload["calibration"]["calibration_ids"] == ["68RT0057AA"]
+
+
+def test_http_procedures_endpoint(http):
+    http("/api/connect", {"url": CHARGER})
+    status, payload = http("/api/procedures")
+    assert status == 200
+    assert any(i["key"] == "mds-lifter" for i in payload["issues"])
+
+
+def test_http_baseline_save_needs_a_label(http):
+    http("/api/connect", {"url": CHARGER})
+    status, payload = http("/api/baselines/save", {})
+    assert status == 400
+    assert "name" in payload["error"]
+
+
+def test_http_baseline_compare_needs_an_id(http):
+    http("/api/connect", {"url": CHARGER})
+    status, _ = http("/api/baselines/compare", {})
+    assert status == 400

@@ -34,6 +34,8 @@
   <button class="tab" role="tab" data-view="scan" data-needs-car aria-selected="false">Health</button>
   <button class="tab" role="tab" data-view="live" data-needs-car aria-selected="false">Live</button>
   <button class="tab" role="tab" data-view="codes" data-needs-car aria-selected="false">Codes</button>
+  <button class="tab" role="tab" data-view="tests" data-needs-car aria-selected="false">Monitors</button>
+  <button class="tab" role="tab" data-view="baselines" data-needs-car aria-selected="false">Baselines</button>
   <button class="tab" role="tab" data-view="vehicle" data-needs-car aria-selected="false">Vehicle</button>
 </nav>
 
@@ -123,6 +125,35 @@
       <span class="muted" id="codes-meta"></span>
     </div>
     <div id="codes-body"><p class="muted">Read the stored trouble codes to begin.</p></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-tests" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="read-tests" type="button">Read monitors</button>
+      <span class="muted" id="tests-meta"></span>
+    </div>
+    <p class="muted">
+      Mode 06 is what the monitors actually measured, not just whether they
+      passed. Misfire counters move here long before a code is set, so this is
+      where a developing fault shows up first.
+    </p>
+    <div id="tests-body"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-baselines" role="tabpanel">
+    <div class="view-head">
+      <input type="text" id="baseline-label" placeholder="name this snapshot, e.g. before-plugs">
+      <button class="btn btn-primary" id="save-baseline" type="button">Save snapshot</button>
+    </div>
+    <p class="muted">
+      Record how the car is now, change one thing, then compare. That turns
+      "does it feel better?" into a measurement — and a changed calibration ID
+      tells you if the ECU was reflashed.
+    </p>
+    <div id="baselines-body"></div>
+    <div id="compare-body"></div>
   </section>
 
   <!-- ---------------------------------------------------------------- -->

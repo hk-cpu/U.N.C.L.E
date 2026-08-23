@@ -124,6 +124,7 @@
     // Sampling only makes sense while its view is on screen.
     if (name !== "live" && state.sampling) stopLive();
     if (name === "vehicle") loadVehicle();
+    if (name === "baselines") loadBaselines();
   }
 
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -572,6 +573,220 @@
       busy(button, false);
     }
   });
+
+  /* -------------------------------------------------------- mode 06 tests */
+
+  async function readTests() {
+    const button = $("read-tests");
+    const body = $("tests-body");
+    busy(button, true, "Reading");
+
+    try {
+      const payload = await get("/api/tests");
+      renderTests(payload);
+    } catch (exc) {
+      clear(body).appendChild(alertBox(exc.message));
+    } finally {
+      busy(button, false);
+    }
+  }
+  $("read-tests").addEventListener("click", readTests);
+
+  function renderTests(payload) {
+    const body = clear($("tests-body"));
+    const tests = payload.tests || [];
+    const counts = payload.misfire_counts || {};
+    const deactivated = new Set(payload.deactivated_cylinders || []);
+
+    $("tests-meta").textContent = `${tests.length} monitors`;
+
+    if (!tests.length) {
+      body.appendChild(el("p", "muted",
+        "This ECU returned no mode 06 results. Some cars only answer once a "
+        + "drive cycle has run the monitors."));
+      return;
+    }
+
+    const cylinders = Object.keys(counts).map(Number).sort((a, b) => a - b);
+    if (cylinders.length) {
+      const section = el("div", "section");
+      section.appendChild(el("h3", null, "Misfire counts by cylinder"));
+
+      const highest = Math.max(...cylinders.map((c) => counts[c]), 1);
+      cylinders.forEach((cylinder) => {
+        const count = counts[cylinder];
+        const row = el("div", "bar-row");
+        const label = el("div", "bar-label", `Cylinder ${cylinder}`);
+        if (deactivated.has(cylinder)) {
+          label.appendChild(el("span", "bar-tag", "deactivated at cruise"));
+        }
+        row.appendChild(label);
+
+        const track = el("div", "bar-track");
+        const fill = el("div",
+          `bar-fill${deactivated.has(cylinder) ? " bar-fill-group" : ""}`);
+        fill.style.width = `${(count / highest) * 100}%`;
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el("div", "bar-value", String(count)));
+        section.appendChild(row);
+      });
+
+      section.appendChild(el("p", "hint",
+        "Counts only mean something against each other. One cylinder well above "
+        + "the rest is a fault on that cylinder; a whole group standing out "
+        + "points at whatever that group shares."));
+      body.appendChild(section);
+    }
+
+    const others = tests.filter((t) => t.cylinder === null);
+    if (others.length) {
+      const section = el("div", "section");
+      section.appendChild(el("h3", null, "Other monitors"));
+
+      const wrap = el("div", "table-wrap");
+      const table = el("table", "data");
+      const head = el("tr");
+      ["monitor", "measured", "limits", "of limit"].forEach((title) => {
+        const th = el("th", null, title);
+        head.appendChild(th);
+      });
+      table.appendChild(head);
+
+      others.forEach((test) => {
+        const tr = el("tr");
+        tr.appendChild(el("td", null, test.monitor));
+        tr.appendChild(el("td", null, test.formatted));
+        tr.appendChild(el("td", null, test.limits));
+
+        const cell = el("td", null,
+          test.headroom === null ? "—" : `${(test.headroom * 100).toFixed(0)} %`);
+        if (test.passed === false) cell.className = "cell-critical";
+        else if (test.headroom !== null && test.headroom >= 0.85) {
+          cell.className = "cell-warning";
+        }
+        tr.appendChild(cell);
+        table.appendChild(tr);
+      });
+      wrap.appendChild(table);
+      section.appendChild(wrap);
+      body.appendChild(section);
+    }
+  }
+
+  /* ----------------------------------------------------------- baselines */
+
+  async function loadBaselines() {
+    const body = clear($("baselines-body"));
+    let payload;
+    try {
+      payload = await get("/api/baselines");
+    } catch (exc) {
+      body.appendChild(alertBox(exc.message));
+      return;
+    }
+
+    const snapshots = payload.snapshots || [];
+    if (!snapshots.length) {
+      body.appendChild(el("p", "muted",
+        "No snapshots yet. Save one before you change anything."));
+      return;
+    }
+
+    const section = el("div", "section");
+    section.appendChild(el("h3", null, `${snapshots.length} saved snapshots`));
+
+    snapshots.forEach((snapshot) => {
+      const card = el("div", "finding");
+      const head = el("div", "finding-head");
+      head.appendChild(el("div", "finding-title", snapshot.label));
+      head.appendChild(el("span", "muted", snapshot.when));
+      card.appendChild(head);
+      card.appendChild(el("p", "finding-detail",
+        `${snapshot.headline || "no summary"}${snapshot.vin ? "  ·  VIN " + snapshot.vin : ""}`));
+
+      const row = el("div", "row");
+      const compare = el("button", "btn btn-primary", "Compare against now");
+      compare.type = "button";
+      compare.addEventListener("click", () => compareBaseline(snapshot.id, compare));
+      row.appendChild(compare);
+
+      const remove = el("button", "btn btn-quiet", "Delete");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        try {
+          await post("/api/baselines/delete", { id: snapshot.id });
+          toast("Snapshot deleted");
+          loadBaselines();
+        } catch (exc) {
+          toast(exc.message);
+        }
+      });
+      row.appendChild(remove);
+      card.appendChild(row);
+      section.appendChild(card);
+    });
+    body.appendChild(section);
+  }
+
+  $("save-baseline").addEventListener("click", async () => {
+    const button = $("save-baseline");
+    const label = $("baseline-label").value.trim()
+      || new Date().toISOString().slice(0, 16).replace("T", " ");
+    busy(button, true, "Scanning");
+    try {
+      await post("/api/baselines/save", { label });
+      $("baseline-label").value = "";
+      toast(`Saved "${label}"`);
+      loadBaselines();
+    } catch (exc) {
+      toast(exc.message);
+    } finally {
+      busy(button, false);
+    }
+  });
+
+  async function compareBaseline(id, button) {
+    const body = clear($("compare-body"));
+    busy(button, true, "Comparing");
+    try {
+      const payload = await post("/api/baselines/compare", { id });
+      renderComparison(payload);
+    } catch (exc) {
+      body.appendChild(alertBox(exc.message));
+    } finally {
+      busy(button, false);
+    }
+  }
+
+  function renderComparison(payload) {
+    const body = clear($("compare-body"));
+    const section = el("div", "section");
+    section.appendChild(el("h3", null,
+      `${payload.before.label} (${payload.before.when})  →  now`));
+    section.appendChild(el("p", "muted", payload.summary));
+
+    const changes = payload.changes || [];
+    if (!changes.length) {
+      body.appendChild(section);
+      return;
+    }
+
+    const arrows = { worse: "↑", better: "↓", neutral: "·" };
+    changes.forEach((change) => {
+      const card = el("div", `finding change-${change.direction}`);
+      const head = el("div", "finding-head");
+      head.appendChild(el("span", `change-mark change-${change.direction}`,
+        arrows[change.direction] || "·"));
+      head.appendChild(el("div", "finding-title", change.label));
+      card.appendChild(head);
+      card.appendChild(el("p", "finding-detail",
+        `${change.before}  →  ${change.after}`));
+      if (change.note) card.appendChild(el("p", "finding-suggest", change.note));
+      section.appendChild(card);
+    });
+    body.appendChild(section);
+  }
 
   /* ------------------------------------------------------------- vehicle */
 

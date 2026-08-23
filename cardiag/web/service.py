@@ -13,7 +13,8 @@ import time
 from collections import deque
 from typing import Any
 
-from .. import pids, report as report_module, vehicles, vin as vin_module
+from .. import baseline as baseline_module, mode06, pids
+from .. import report as report_module, vehicles, vin as vin_module
 from ..elm327 import ObdError
 from ..session import Reading, Session
 from ..transport import TransportError, describe_url
@@ -52,6 +53,8 @@ class VehicleService:
         self._history: dict[str, deque] = {}
         self._sample_count = 0
         self._last_sample_at: float | None = None
+        #: Where baselines are stored; tests point this at a temporary file.
+        self.baseline_path = None
 
     # -- connection --------------------------------------------------------
     def connect(self, url: str, timeout: float = 5.0,
@@ -193,6 +196,96 @@ class VehicleService:
             session = self._require()
             status = session.monitor_status()
         return {"status": report_module.status_dict(status)}
+
+    def monitor_tests(self) -> dict:
+        """Mode 06 results, plus the per-cylinder misfire view."""
+        with self._lock:
+            session = self._require()
+            tests = session.monitor_tests()
+            counts = {
+                cylinder: test.raw_value
+                for test in tests
+                if (cylinder := mode06.misfire_cylinder(test.mid)) is not None
+            }
+            if not counts:
+                counts = session.misfire_counts()
+            deactivated = (
+                list(self._profile.engine.deactivated_cylinders)
+                if self._profile else []
+            )
+
+        return {
+            "tests": [test.to_dict() for test in tests],
+            "misfire_counts": {str(k): v for k, v in sorted(counts.items())},
+            "deactivated_cylinders": deactivated,
+        }
+
+    def calibration(self) -> dict:
+        with self._lock:
+            return self._require().calibration()
+
+    def procedures(self) -> dict:
+        """Guided fix procedures, when a profile supplies any."""
+        if self._profile is None:
+            return {"profile": None, "issues": []}
+        return {
+            "profile": self._profile.name,
+            "issues": [
+                {
+                    "key": issue.key,
+                    "title": issue.title,
+                    "detail": issue.detail,
+                    "severity": issue.severity,
+                    "procedure": [step.to_dict() for step in issue.procedure],
+                }
+                for issue in self._profile.known_issues if issue.procedure
+            ],
+        }
+
+    # -- baselines ---------------------------------------------------------
+    def _store(self) -> baseline_module.BaselineStore:
+        return baseline_module.BaselineStore(self.baseline_path)
+
+    def list_baselines(self) -> dict:
+        with self._store() as store:
+            return {"snapshots": [s.to_dict() for s in store.list()]}
+
+    def save_baseline(self, label: str) -> dict:
+        report = self.scan()
+        with self._store() as store:
+            snapshot = store.save(report, label)
+        return snapshot.to_dict()
+
+    def delete_baseline(self, snapshot_id: int) -> dict:
+        with self._store() as store:
+            if not store.delete(snapshot_id):
+                raise ServiceError(f"no snapshot with id {snapshot_id}")
+        return {"deleted": snapshot_id}
+
+    def compare_baseline(self, snapshot_id: int) -> dict:
+        """Compare a saved snapshot against the car as it is right now."""
+        with self._store() as store:
+            try:
+                before = store.get(snapshot_id)
+            except KeyError as exc:
+                raise ServiceError(str(exc.args[0])) from exc
+
+        report = self.scan()
+        after = baseline_module.Snapshot(
+            id=0, taken_at=report.get("generated_at", 0.0), label="now",
+            vin=(report.get("vehicle") or {}).get("vin"),
+            profile=(report.get("profile") or {}).get("name"),
+            headline=report.get("headline"),
+            worst_severity=report.get("worst_severity"),
+            payload=report,
+        )
+        changes = baseline_module.compare(before, after)
+        return {
+            "before": before.to_dict(),
+            "after": after.to_dict(),
+            "summary": baseline_module.summarise(changes),
+            "changes": [change.to_dict() for change in changes],
+        }
 
     def vehicle(self) -> dict:
         with self._lock:

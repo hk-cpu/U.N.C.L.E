@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from . import dtc, pids
+from . import dtc, mode06, pids
 from .elm327 import ELM327, AdapterInfo, NoDataError, ObdError
 from .pids import PID, MonitorStatus
 from .transport import TransportError, open_transport
@@ -206,7 +206,122 @@ class Session:
         # The reply echoes the frame number after the PID; drop it.
         return payload[1:] if payload else None
 
+    # -- mode 06: on-board monitor test results ---------------------------
+    def supported_monitors(self) -> set[int]:
+        """Every mode 06 monitor ID this ECU advertises."""
+        found: set[int] = set()
+        for base in mode06.BITMAP_MIDS:
+            try:
+                payloads = self.elm.request_records(0x06, base)
+            except (ObdError, TransportError):
+                break
+            if not payloads:
+                break
+
+            advertised: set[int] = set()
+            for payload in payloads:
+                advertised |= mode06.decode_supported(base, payload)
+            if not advertised:
+                break
+
+            found |= advertised
+            if base + 0x20 not in advertised:
+                break
+        return found
+
+    def monitor_tests(self, mids: Iterable[int] | None = None) -> list[mode06.TestResult]:
+        """Read mode 06 test results, defaulting to every monitor on offer.
+
+        Bitmap MIDs are skipped: they advertise other monitors rather than
+        measuring anything.
+        """
+        if mids is None:
+            mids = sorted(self.supported_monitors())
+
+        results: list[mode06.TestResult] = []
+        for mid in mids:
+            if mid in mode06.BITMAP_MIDS:
+                continue
+            try:
+                payloads = self.elm.request_records(0x06, mid)
+            except (NoDataError, ObdError, TransportError):
+                continue
+            for payload in payloads:
+                # Some ECUs answer a request with records for other monitors
+                # too; keep only what was asked for.
+                results.extend(
+                    record for record in mode06.parse_records(payload)
+                    if record.mid == mid
+                )
+        return results
+
+    def misfire_counts(self) -> dict[int, int]:
+        """Per-cylinder misfire counters, keyed by cylinder number.
+
+        Where a cylinder reports several tests, the largest count is kept -
+        the counters are typically "this drive cycle" and a longer-run average,
+        and the worst of them is what matters.
+        """
+        counts: dict[int, int] = {}
+        first = mode06.MISFIRE_BASE + 1
+        for record in self.monitor_tests(range(first, mode06.MISFIRE_LAST + 1)):
+            cylinder = mode06.misfire_cylinder(record.mid)
+            if cylinder is None:
+                continue
+            counts[cylinder] = max(counts.get(cylinder, 0), record.raw_value)
+        return counts
+
     # -- identity ----------------------------------------------------------
+    def calibration(self) -> dict[str, list[str]]:
+        """Mode 09 calibration ID and verification number.
+
+        Together these identify the software actually running in the ECU. Record
+        them before changing anything: if they differ later, the module was
+        reflashed, which is the only reliable way to tell a tune was applied or
+        lost without taking anyone's word for it.
+        """
+        return {
+            "calibration_ids": self._read_mode_09_list(0x04),
+            "verification_numbers": self._read_mode_09_hex(0x06),
+        }
+
+    def _read_mode_09_list(self, pid: int) -> list[str]:
+        """Mode 09 items are fixed 4-byte-aligned ASCII blocks, count-prefixed."""
+        try:
+            data = self.elm.request(0x09, pid)
+        except (NoDataError, ObdError, TransportError):
+            return []
+        if len(data) < 2:
+            return []
+
+        count = data[0]
+        body = data[1:]
+        if not 1 <= count <= 8 or len(body) % count:
+            # The count byte looked wrong; treat the whole payload as one item.
+            text = _printable(body)
+            return [text] if text else []
+
+        width = len(body) // count
+        items = [_printable(body[i * width:(i + 1) * width]) for i in range(count)]
+        return [item for item in items if item]
+
+    def _read_mode_09_hex(self, pid: int) -> list[str]:
+        """CVNs are binary, so they are reported as hex rather than text."""
+        try:
+            data = self.elm.request(0x09, pid)
+        except (NoDataError, ObdError, TransportError):
+            return []
+        if len(data) < 2:
+            return []
+
+        count = data[0]
+        body = data[1:]
+        if not 1 <= count <= 8 or len(body) % count:
+            return [body.hex().upper()] if body else []
+
+        width = len(body) // count
+        return [body[i * width:(i + 1) * width].hex().upper() for i in range(count)]
+
     def vehicle_info(self) -> VehicleInfo:
         fuel = self.read(0x51)
         return VehicleInfo(
@@ -237,6 +352,12 @@ class Session:
             data = data[1:]
         text = data.decode("ascii", "ignore")
         return "".join(ch for ch in text if ch.isprintable()).strip() or None
+
+
+def _printable(data: bytes) -> str:
+    """ASCII from a mode 09 block, with the NUL padding removed."""
+    text = data.decode("ascii", "ignore")
+    return "".join(ch for ch in text if ch.isprintable()).strip()
 
 
 def _decode_bitmap(base: int, data: bytes) -> set[int]:

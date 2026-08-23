@@ -24,7 +24,7 @@ cardiag --sim --sim-profile charger-misfire scan
 cardiag ui
 ```
 
-It starts a local server and opens `http://127.0.0.1:8765/`. Five tabs:
+It starts a local server and opens `http://127.0.0.1:8765/`. Seven tabs:
 
 - **Connect** — pick your adapter from a list, or click a simulated car to try
   it with no hardware.
@@ -35,6 +35,9 @@ It starts a local server and opens `http://127.0.0.1:8765/`. Five tabs:
   a glance instead of needing to be spotted in a column of numbers.
 - **Codes** — trouble codes with likely causes and model-specific notes, and a
   Clear button that explains what clearing costs before it does it.
+- **Monitors** — mode 06, with the per-cylinder misfire counters drawn as bars
+  so a skewed group is obvious at a glance.
+- **Baselines** — save a snapshot, then compare the car against it later.
 - **Vehicle** — the decoded VIN and everything the profile knows about your
   engine.
 
@@ -51,6 +54,95 @@ cardiag ui --host 0.0.0.0
 
 That prints a URL containing a token, which is then required — the API can
 erase your trouble codes, so it is not left open.
+
+### Catching it before it breaks
+
+A code reader tells you what already failed. Mode 06 tells you what is *about*
+to. It is where the ECU keeps the measurements behind its pass/fail monitors —
+including a misfire counter for every cylinder.
+
+```bash
+cardiag misfires
+```
+
+```
+Misfire counts by cylinder ------------------------------------
+  cylinder 1      22  ######################......  (deactivated at cruise)
+  cylinder 2       3  ###.........................
+  cylinder 3       2  ##..........................
+  cylinder 4      28  ############################  (deactivated at cruise)
+  cylinder 5       4  ####........................
+  cylinder 6      19  ###################.........  (deactivated at cruise)
+  cylinder 7      25  #########################...  (deactivated at cruise)
+  cylinder 8       3  ###.........................
+```
+
+That car has **no stored codes and no warning light**. Every one of the four
+tall bars is an MDS cylinder, and that skew is the pattern worn MDS lifters
+produce. `cardiag scan` says so in words, and flags the bank 2 catalyst sitting
+at 92 % of its own failure limit — still passing, so still no code.
+
+```bash
+cardiag tests          # every monitor: measured value, limits, margin left
+cardiag tests --all    # including the ones with plenty of headroom
+```
+
+### Guided repair
+
+```bash
+cardiag fix                 # what procedures exist for your car
+cardiag fix mds-lifter      # walk one
+```
+
+Each step says what to do, what a good result looks like, which live parameters
+to watch while you do it, and where you can hurt yourself or the car.
+
+### Before and after
+
+The way to change something safely is to measure first.
+
+```bash
+cardiag baseline before-plugs     # snapshot the car as it is
+#   ... fit the parts, drive it ...
+cardiag compare before-plugs      # what actually moved
+```
+
+```
+  ↓ Long term fuel trim, bank 2
+     23.44 %  ->  4.69 %
+     -18.75
+```
+
+`compare` exits non-zero if anything got worse, so it drops into a script.
+
+This also covers tuning. `cardiag calibration` reads the ECU's calibration ID
+and verification number — the identity of the software actually running in the
+module. Snapshot it before a tune and `compare` will tell you plainly if the
+PCM was reflashed, by you or by anyone else:
+
+```
+  · ECU calibration
+     68RT0057AA  ->  68XX9999ZZ
+     The calibration ID changed, so the module was reflashed between these two
+     snapshots. If that was not deliberate, find out who did it.
+```
+
+Snapshots live in `~/.local/share/cardiag/baselines.db` (override with
+`--store` or `$CARDIAG_HOME`).
+
+### What this does not do
+
+**It does not write calibrations to the ECU.** That is a deliberate limit, not
+an oversight. The 2006 LX powertrain module is security-locked, its calibration
+tables are proprietary, and none of it is reachable over generic OBD-II.
+Writing speculative bytes at it does not produce a tune — it bricks a VIN-locked
+module and immobilises the car, and recovering that needs dealer-level tooling
+to re-marry the module to the immobiliser.
+
+Actual flash tuning needs a tool that has licensed or reverse-engineered those
+tables: HP Tuners, DiabloSport, SCT and similar. What cardiag gives you is
+everything around that — the logs a tuner asks for, proof of which calibration
+is loaded, and a before/after measurement to show whether it helped.
 
 ### Vehicle profiles
 
@@ -155,6 +247,12 @@ things. For live data, have the engine running.
 | `cardiag ui` | Browser interface — everything below, with a screen |
 | `cardiag scan` | Full health check with findings (the default) |
 | `cardiag codes` | Trouble codes with likely causes |
+| `cardiag misfires` | Per-cylinder misfire counters |
+| `cardiag tests` | Mode 06: what the monitors measured, and their margin |
+| `cardiag fix <issue>` | Guided repair procedure |
+| `cardiag baseline <name>` | Snapshot the car for later comparison |
+| `cardiag compare <name>` | What changed since a snapshot |
+| `cardiag calibration` | ECU calibration ID and verification number |
 | `cardiag lookup P0420` | Explain a code — works offline, no car needed |
 | `cardiag vehicle` | What cardiag knows about your model |
 | `cardiag vin` | Decode and validate the VIN |
@@ -177,13 +275,14 @@ cardiag --json scan > "health-$(date +%F).json" || notify-send "Car needs attent
 
 ### Trying it without a car
 
-Five simulated vehicles are built in:
+Six simulated vehicles are built in:
 
 ```bash
 cardiag --sim scan                              # healthy car
 cardiag --sim --sim-profile faulty scan         # check-engine light, three codes
 cardiag --sim --sim-profile emissions monitors  # codes recently cleared
 cardiag --sim --sim-profile charger scan        # healthy 2006 Charger R/T
+cardiag --sim --sim-profile charger-wear misfires # wear with no codes set yet
 cardiag --sim --sim-profile charger-misfire scan  # Charger, MDS-cylinder misfire
 cardiag --sim live                              # dashboard on a simulated drive
 ```
@@ -232,8 +331,10 @@ cli.py            argparse front end, output formatting
   report.py       findings: turns readings into "here is what to check"
   logger.py       CSV and SQLite recording
     session.py    the high-level vehicle API
-      vehicles.py model profiles: engine layout and known issues
+      baseline.py snapshots and before/after comparison
+      vehicles.py model profiles: engine layout, known issues, procedures
       vin.py      VIN validation and decoding
+      mode06.py   on-board monitor test results
       elm327.py   adapter driver: handshake, framing, multi-frame CAN
       pids.py     parameter table and SAE J1979 decoders
       dtc.py      trouble code decoding and the fault database

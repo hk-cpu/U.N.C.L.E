@@ -143,6 +143,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"channels": self.service.available_channels()})
             elif path == "/api/live":
                 self._json(self.service.live_snapshot())
+            elif path == "/api/tests":
+                self._json(self.service.monitor_tests())
+            elif path == "/api/calibration":
+                self._json({"calibration": self.service.calibration()})
+            elif path == "/api/procedures":
+                self._json(self.service.procedures())
+            elif path == "/api/baselines":
+                self._json(self.service.list_baselines())
             else:
                 self._error("no such endpoint", HTTPStatus.NOT_FOUND)
         except ServiceError as exc:
@@ -166,6 +174,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.service.start_live(body.get("channels")))
         elif path == "/api/live/stop":
             self._json(self.service.stop_live())
+        elif path == "/api/baselines/save":
+            label = (body.get("label") or "").strip()
+            if not label:
+                raise ServiceError("give the snapshot a name")
+            self._json(self.service.save_baseline(label))
+        elif path == "/api/baselines/compare":
+            snapshot_id = body.get("id")
+            if not isinstance(snapshot_id, int):
+                raise ServiceError("which snapshot should I compare against?")
+            self._json(self.service.compare_baseline(snapshot_id))
+        elif path == "/api/baselines/delete":
+            snapshot_id = body.get("id")
+            if not isinstance(snapshot_id, int):
+                raise ServiceError("which snapshot should I delete?")
+            self._json(self.service.delete_baseline(snapshot_id))
         elif path == "/api/clear":
             if body.get("confirm") != "clear":
                 raise ServiceError("clearing codes needs an explicit confirmation")

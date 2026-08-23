@@ -8,7 +8,8 @@ import os
 import sys
 import time
 
-from . import __version__, console, dtc, pids, vehicles, vin as vin_module
+from . import __version__, baseline as baseline_module, console, dtc, mode06
+from . import pids, vehicles, vin as vin_module
 from . import report as report_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
@@ -75,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Running cardiag with no subcommand falls through to "scan", so scan's own
     # defaults have to exist on the top-level parser as well.
-    parser.set_defaults(no_freeze=False)
+    parser.set_defaults(no_freeze=False, no_monitors=False)
 
     sub = parser.add_subparsers(dest="command")
 
@@ -87,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="full health check with findings (default)")
     scan.add_argument(
         "--no-freeze", action="store_true", help="skip reading the freeze frame",
+    )
+    scan.add_argument(
+        "--no-monitors", action="store_true",
+        help="skip mode 06; faster, but misses faults that have not set a code yet",
     )
 
     codes = sub.add_parser("codes", help="read stored trouble codes")
@@ -124,6 +129,34 @@ def build_parser() -> argparse.ArgumentParser:
                     help="port to listen on (default: 8765)")
     ui.add_argument("--no-browser", action="store_true",
                     help="do not open a browser window")
+
+    monitors06 = sub.add_parser(
+        "tests", help="mode 06 monitor results, including per-cylinder misfires")
+    monitors06.add_argument("--all", action="store_true", dest="all_tests",
+                            help="show every monitor, not just the notable ones")
+
+    sub.add_parser("misfires", help="per-cylinder misfire counters")
+    sub.add_parser("calibration", help="ECU calibration ID and verification number")
+
+    save = sub.add_parser("baseline", help="save a snapshot to compare against later")
+    save.add_argument("label", nargs="?", default=None,
+                      help="a name for this snapshot, e.g. 'before-plugs'")
+    save.add_argument("--list", action="store_true", dest="list_baselines",
+                      help="list saved snapshots instead of taking one")
+    save.add_argument("--delete", type=int, metavar="ID",
+                      help="delete a saved snapshot")
+    save.add_argument("--store", metavar="FILE", help="use a specific database file")
+
+    diff = sub.add_parser("compare", help="compare two snapshots, or one against now")
+    diff.add_argument("before", nargs="?", default="latest",
+                      help="snapshot id, label, 'latest' or 'first' (default: latest)")
+    diff.add_argument("after", nargs="?", default=None,
+                      help="the second snapshot; omit to compare against the car now")
+    diff.add_argument("--store", metavar="FILE", help="use a specific database file")
+
+    fix = sub.add_parser("fix", help="a guided procedure for a known issue")
+    fix.add_argument("issue", nargs="?",
+                     help="which issue, e.g. mds-lifter; omit to list them")
 
     sub.add_parser("vehicle", help="show what cardiag knows about this model")
 
@@ -174,6 +207,8 @@ def _run(argv: list[str] | None) -> int:
     if command == "ui":
         # The UI manages its own connection, so it does not take one from here.
         return _command_ui(args)
+    if command == "fix" and args.profile_object is not None:
+        return _command_fix(args, session=None)
 
     try:
         url = _connection_url(args)
@@ -192,6 +227,12 @@ def _run(argv: list[str] | None) -> int:
         "freeze": _command_freeze,
         "vehicle": _command_vehicle,
         "vin": _command_vin,
+        "tests": _command_tests,
+        "misfires": _command_misfires,
+        "calibration": _command_calibration,
+        "baseline": _command_baseline,
+        "compare": _command_compare,
+        "fix": _command_fix,
     }
     handler = handlers.get(command)
     if handler is None:  # pragma: no cover - argparse rejects unknown commands
@@ -344,6 +385,7 @@ def _command_scan(args: argparse.Namespace, session: Session) -> int:
         include_freeze_frame=not args.no_freeze,
         profile=args.profile_object,
         detect_profile=not getattr(args, "vehicle_disabled", False),
+        include_monitors=not args.no_monitors,
     )
 
     if args.json:
@@ -638,6 +680,323 @@ def _command_freeze(args: argparse.Namespace, session: Session) -> int:
         for value in frame.values() if isinstance(value, Reading)
     ]))
     return 0
+
+
+def _command_fix(args: argparse.Namespace, session: Session | None) -> int:
+    profile = args.profile_object
+    if profile is None and session is not None:
+        vin = session.read_vin()
+        profile = vehicles.match_vin(vin) if vin else None
+
+    if profile is None:
+        return _fail(
+            "no vehicle profile applies, so there are no model-specific "
+            f"procedures. Pick one with --vehicle ({vehicles.describe_choices()})."
+        )
+
+    issues = [i for i in profile.known_issues if i.procedure]
+    if not args.issue:
+        if args.json:
+            print(json.dumps([
+                {"key": i.key, "title": i.title, "steps": len(i.procedure)}
+                for i in issues
+            ], indent=2))
+            return 0
+
+        print(console.heading(f"Guided procedures for the {profile.name}"))
+        print(console.table(
+            [(i.key, i.title, f"{len(i.procedure)} steps") for i in issues],
+            headers=("issue", "what it is", ""),
+        ))
+        print()
+        print("Walk one through with:  cardiag fix mds-lifter")
+        return 0
+
+    wanted = args.issue.strip().lower()
+    issue = next((i for i in profile.known_issues if i.key == wanted), None)
+    if issue is None:
+        known = ", ".join(i.key for i in issues)
+        return _fail(f"no procedure named {args.issue!r}. Known: {known}")
+
+    if not issue.procedure:
+        return _fail(
+            f"{issue.key} has no step-by-step procedure yet; "
+            f"'cardiag vehicle' shows what is known about it."
+        )
+
+    if args.json:
+        print(json.dumps({
+            "key": issue.key,
+            "title": issue.title,
+            "detail": issue.detail,
+            "severity": issue.severity,
+            "procedure": [step.to_dict() for step in issue.procedure],
+        }, indent=2))
+        return 0
+
+    print(console.paint(issue.title, "bold"))
+    print(console.wrap(issue.detail, indent="  "))
+    print()
+
+    for number, step in enumerate(issue.procedure, 1):
+        # Hang the wrapped action text under the step text, not the number.
+        wrapped = console.wrap(step.action, indent=" " * 4).lstrip()
+        print(f" {console.paint(f'{number}.', 'bold')} {wrapped}")
+        if step.expect:
+            print(console.wrap(console.paint(f"Expect: {step.expect}", "dim"),
+                               indent="    "))
+        if step.watch:
+            names = " ".join(step.watch)
+            print(console.wrap(
+                console.paint(f"Watch live:  cardiag live {names}", "cyan"),
+                indent="    "))
+        if step.caution:
+            print(console.wrap(console.severity(f"Caution: {step.caution}",
+                                                "serious"), indent="    "))
+        print()
+
+    print(console.paint(
+        "Take a baseline before you change anything, so you can prove whether "
+        "it helped:  cardiag baseline before-" + issue.key, "dim"))
+    return 0
+
+
+def _command_tests(args: argparse.Namespace, session: Session) -> int:
+    tests = session.monitor_tests()
+
+    if args.json:
+        print(json.dumps([test.to_dict() for test in tests], indent=2))
+        return 0
+
+    if not tests:
+        print("This ECU returned no mode 06 results.")
+        print(console.paint(
+            "Some cars only answer mode 06 after a drive cycle has run the "
+            "monitors. Try again after a mixed drive.", "dim"))
+        return 0
+
+    notable = [t for t in tests if _is_notable(t)]
+    shown = tests if args.all_tests else (notable or tests)
+
+    print(console.heading(f"{len(shown)} of {len(tests)} monitor results"))
+    rows = []
+    for test in shown:
+        verdict = {True: "pass", False: "FAIL", None: "-"}[test.passed]
+        headroom = "" if test.headroom is None else f"{test.headroom * 100:.0f} %"
+        rows.append((test.monitor, test.format_value(), test.format_limits(),
+                     verdict, headroom))
+    print(console.table(rows, headers=("monitor", "measured", "limits",
+                                       "result", "of limit")))
+
+    if not args.all_tests and notable and len(notable) < len(tests):
+        print()
+        print(console.paint(
+            f"{len(tests) - len(notable)} monitors with plenty of margin hidden; "
+            "use --all to see them.", "dim"))
+    return 0
+
+
+def _is_notable(test) -> bool:
+    """Worth showing by default: failing, close to failing, or a misfire count."""
+    if test.passed is False:
+        return True
+    if mode06.misfire_cylinder(test.mid) is not None:
+        return True
+    headroom = test.headroom
+    return headroom is not None and headroom >= 0.6
+
+
+def _command_misfires(args: argparse.Namespace, session: Session) -> int:
+    counts = session.misfire_counts()
+    profile = args.profile_object
+    if profile is None:
+        vin = session.read_vin()
+        profile = vehicles.match_vin(vin) if vin else None
+
+    if args.json:
+        print(json.dumps({
+            "counts": {str(k): v for k, v in counts.items()},
+            "deactivated_cylinders": (
+                list(profile.engine.deactivated_cylinders) if profile else []
+            ),
+        }, indent=2))
+        return 0
+
+    if not counts:
+        print("This ECU did not report per-cylinder misfire counters.")
+        return 0
+
+    deactivated = set(profile.engine.deactivated_cylinders) if profile else set()
+    highest = max(counts.values()) or 1
+    width = 28
+
+    print(console.heading("Misfire counts by cylinder"))
+    for cylinder in sorted(counts):
+        count = counts[cylinder]
+        bar = console.bar(count, 0, highest, width)
+        marker = "  (deactivated at cruise)" if cylinder in deactivated else ""
+        colour = "yellow" if cylinder in deactivated else "cyan"
+        print(f"  cylinder {cylinder}  {str(count).rjust(6)}  "
+              f"{console.paint(bar, colour)}{console.paint(marker, 'dim')}")
+
+    print()
+    print(console.wrap(
+        "Counts are only meaningful against each other. One cylinder well above "
+        "the rest is a fault on that cylinder; a whole group standing out points "
+        "at what that group shares.", indent="  "))
+    return 0
+
+
+def _command_calibration(args: argparse.Namespace, session: Session) -> int:
+    calibration = session.calibration()
+
+    if args.json:
+        print(json.dumps(calibration, indent=2))
+        return 0
+
+    ids = calibration.get("calibration_ids") or []
+    cvns = calibration.get("verification_numbers") or []
+
+    if not ids and not cvns:
+        print("This ECU did not report a calibration ID.")
+        return 0
+
+    print(console.heading("ECU calibration"))
+    rows = []
+    for index, value in enumerate(ids, 1):
+        rows.append((f"calibration ID {index}" if len(ids) > 1 else "calibration ID",
+                     value))
+    for index, value in enumerate(cvns, 1):
+        rows.append((f"verification number {index}" if len(cvns) > 1
+                     else "verification number", value))
+    print(console.table(rows))
+
+    print()
+    print(console.wrap(
+        "This identifies the software running in the ECU. Save it with "
+        "'cardiag baseline' before you change anything: if it differs later, "
+        "the module was reflashed.", indent="  "))
+    return 0
+
+
+def _open_store(args: argparse.Namespace):
+    return baseline_module.BaselineStore(getattr(args, "store", None))
+
+
+def _command_baseline(args: argparse.Namespace, session: Session) -> int:
+    with _open_store(args) as store:
+        if args.delete is not None:
+            if store.delete(args.delete):
+                print(f"Deleted snapshot #{args.delete}.")
+                return 0
+            return _fail(f"no snapshot with id {args.delete}")
+
+        if args.list_baselines:
+            return _list_baselines(args, store)
+
+        label = args.label or time.strftime("%Y-%m-%d %H:%M")
+        if not args.json:
+            print(console.paint("Taking a full snapshot...", "dim"))
+
+        report = report_module.build(
+            session,
+            profile=args.profile_object,
+            detect_profile=not getattr(args, "vehicle_disabled", False),
+        )
+        snapshot = store.save(report.to_dict(), label)
+
+        if args.json:
+            print(json.dumps(snapshot.to_dict(), indent=2))
+            return 0
+
+        print(console.paint(f"Saved snapshot #{snapshot.id} as {label!r}.", "green"))
+        print(console.paint(f"Stored in {store.path}", "dim"))
+        print()
+        print(f"Compare against it later with:  cardiag compare {snapshot.id}")
+        return 0
+
+
+def _list_baselines(args: argparse.Namespace, store) -> int:
+    snapshots = store.list()
+
+    if args.json:
+        print(json.dumps([s.to_dict() for s in snapshots], indent=2))
+        return 0
+
+    if not snapshots:
+        print("No snapshots saved yet. Take one with:  cardiag baseline before-work")
+        return 0
+
+    print(console.heading(f"{len(snapshots)} saved snapshots"))
+    print(console.table([
+        (str(s.id), s.when, s.label, s.vin or "-", s.headline or "-")
+        for s in snapshots
+    ], headers=("id", "taken", "label", "vin", "state")))
+    return 0
+
+
+def _command_compare(args: argparse.Namespace, session: Session) -> int:
+    with _open_store(args) as store:
+        try:
+            before = store.resolve(args.before)
+        except KeyError as exc:
+            return _fail(str(exc.args[0]))
+
+        if args.after:
+            try:
+                after = store.resolve(args.after)
+            except KeyError as exc:
+                return _fail(str(exc.args[0]))
+            after_label = f"snapshot #{after.id} ({after.label})"
+            after_payload = after
+        else:
+            if not args.json:
+                print(console.paint("Reading the car now...", "dim"))
+            live = report_module.build(
+                session,
+                profile=args.profile_object,
+                detect_profile=not getattr(args, "vehicle_disabled", False),
+            )
+            after_payload = baseline_module.Snapshot(
+                id=0, taken_at=live.generated_at, label="now",
+                vin=live.vehicle.vin,
+                profile=live.profile.name if live.profile else None,
+                headline=live.headline, worst_severity=live.worst_severity,
+                payload=live.to_dict(),
+            )
+            after_label = "the car right now"
+
+        changes = baseline_module.compare(before, after_payload)
+
+    if args.json:
+        print(json.dumps({
+            "before": before.to_dict(),
+            "after": after_payload.to_dict(),
+            "summary": baseline_module.summarise(changes),
+            "changes": [change.to_dict() for change in changes],
+        }, indent=2))
+        return 1 if any(c.direction == "worse" for c in changes) else 0
+
+    print(console.paint(
+        f"snapshot #{before.id} ({before.label}, {before.when})  ->  {after_label}",
+        "bold"))
+    print(console.paint(baseline_module.summarise(changes), "dim"))
+    print()
+
+    if not changes:
+        return 0
+
+    colours = {"worse": "red", "better": "green", "neutral": "cyan"}
+    marks = {"worse": " ↑", "better": " ↓", "neutral": " ·"}
+    for change in changes:
+        mark = console.paint(marks[change.direction], colours[change.direction])
+        print(f" {mark} {console.paint(change.label, 'bold')}")
+        print(console.wrap(f"{change.before}  ->  {change.after}"))
+        if change.note:
+            print(console.wrap(console.paint(change.note, "dim")))
+        print()
+
+    return 1 if any(c.direction == "worse" for c in changes) else 0
 
 
 def _command_ui(args: argparse.Namespace) -> int:

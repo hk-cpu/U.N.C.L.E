@@ -33,6 +33,21 @@ CHARGER_VIN = "2B3KA53H66H123456"
 #: simulated car models, so V8 profiles advertise more PIDs.
 V8_EXTRA_PIDS = {0x08, 0x09, 0x18, 0x19, 0x3D, 0x3F}
 
+#: Mode 06 monitors a four-cylinder car reports: two oxygen sensors, one
+#: catalyst, and a misfire counter per cylinder ($A2 is cylinder 1).
+#: The bitmap MIDs ($20, $40, $60, $80, $A0) have to be present too - each one
+#: advertises the next, and discovery stops at the first gap in that chain.
+SUPPORTED_MONITORS = {0x00, 0x01, 0x02,
+                      0x20, 0x40, 0x41, 0x60, 0x80, 0xA0, 0xA1,
+                      0xA2, 0xA3, 0xA4, 0xA5}
+
+#: A V8 adds bank 2's sensors and catalyst, and four more cylinders.
+V8_EXTRA_MONITORS = {0x05, 0x06, 0x42, 0xA6, 0xA7, 0xA8, 0xA9}
+
+#: What the ECU says is loaded. Recording these is how a reflash is detected.
+CALIBRATION_ID = "68RT0057AA"
+CALIBRATION_VERIFICATION = "4A1B7C2D"
+
 PROFILES = {
     "default": {
         "codes": [],
@@ -60,7 +75,25 @@ PROFILES = {
         "vin": CHARGER_VIN,
         "v8": True,
         "ecu_name": "ECM-HEMI-5.7",
+        # An even scatter of counts across all eight cylinders: normal.
+        "misfire_counts": {1: 3, 2: 2, 3: 4, 4: 2, 5: 3, 6: 3, 7: 2, 8: 4},
+        "catalyst_ratio": {1: 0.21, 2: 0.24},
         "description": "healthy 2006 Dodge Charger R/T, 5.7 HEMI V8",
+    },
+    "charger-wear": {
+        # The case worth catching: no codes, no warning light, nothing a code
+        # reader would show. But the MDS cylinders are already counting misfires
+        # several times the others, and bank 2's catalyst monitor is nearly at
+        # its limit. This is what "before it breaks" looks like.
+        "codes": [],
+        "pending": [],
+        "mil": False,
+        "vin": CHARGER_VIN,
+        "v8": True,
+        "ecu_name": "ECM-HEMI-5.7",
+        "misfire_counts": {1: 22, 2: 3, 3: 2, 4: 28, 5: 4, 6: 19, 7: 25, 8: 3},
+        "catalyst_ratio": {1: 0.22, 2: 0.69},
+        "description": "2006 Charger R/T, no codes but wear showing in mode 06",
     },
     "charger-misfire": {
         # A misfire on cylinder 4 - one of the four MDS cylinders - alongside a
@@ -72,6 +105,11 @@ PROFILES = {
         "v8": True,
         "ecu_name": "ECM-HEMI-5.7",
         "lean_bank": 2,
+        # Cylinder 4 has failed outright, and 1, 6 and 7 - the other three MDS
+        # cylinders - are already counting well above the non-MDS four. That
+        # skew is the pattern a worn MDS lifter set produces.
+        "misfire_counts": {1: 41, 2: 3, 3: 2, 4: 168, 5: 4, 6: 37, 7: 45, 8: 3},
+        "catalyst_ratio": {1: 0.23, 2: 0.68},
         "description": "2006 Charger R/T with an MDS-cylinder misfire",
     },
 }
@@ -103,8 +141,10 @@ class SimulatorTransport(Transport):
         self.vin = self.profile.get("vin", VIN)
         self.ecu_name = self.profile.get("ecu_name", ECU_NAME)
         self.supported = set(SUPPORTED_PIDS)
+        self.monitors = set(SUPPORTED_MONITORS)
         if self.profile.get("v8"):
             self.supported |= V8_EXTRA_PIDS
+            self.monitors |= V8_EXTRA_MONITORS
 
     # -- transport plumbing ------------------------------------------------
     def open(self) -> None:
@@ -206,9 +246,65 @@ class SimulatorTransport(Transport):
             self._mil = False
             self._cleared_at = time.monotonic()
             return "44"
+        if mode == 0x06:
+            return self._mode_06(request)
         if mode == 0x09:
             return self._mode_09(request)
         return "NO DATA"
+
+    # -- mode 06 -----------------------------------------------------------
+    def _mode_06(self, request: bytes) -> str:
+        if len(request) < 2:
+            return "NO DATA"
+        mid = request[1]
+
+        if mid == 0x00:
+            return _multiline(bytes([0x46]) + _mode06_bitmap(0x00, self.monitors))
+        if mid == 0x20:
+            return _multiline(bytes([0x46]) + _mode06_bitmap(0x20, self.monitors))
+        if mid in (0x40, 0x60, 0x80):
+            return _multiline(bytes([0x46]) + _mode06_bitmap(mid, self.monitors))
+        if mid == 0xA0:
+            return _multiline(bytes([0x46]) + _mode06_bitmap(0xA0, self.monitors))
+
+        if mid not in self.monitors:
+            return "NO DATA"
+
+        records = self._monitor_records(mid)
+        if not records:
+            return "NO DATA"
+
+        payload = bytes([0x46]) + b"".join(records)
+        return _multiline(payload) if len(payload) > 7 else _hex(payload)
+
+    def _monitor_records(self, mid: int) -> list[bytes]:
+        """Build the nine-byte records this monitor reports."""
+        from ..mode06 import misfire_cylinder
+
+        cylinder = misfire_cylinder(mid)
+        if cylinder is not None:
+            counts = self.profile.get("misfire_counts", {})
+            value = counts.get(cylinder, 0)
+            # TID $0B, scaling $24 (counts). The ECU's failure threshold on a
+            # misfire counter is the count that would set a code.
+            return [_record(mid, 0x0B, 0x24, value, 0, 200)]
+
+        if mid in (0x41, 0x42):
+            # Catalyst efficiency: a switch ratio, lower is healthier. Bank 2 is
+            # the one degrading on the misfire profile.
+            bank = 1 if mid == 0x41 else 2
+            ratio = self.profile.get("catalyst_ratio", {}).get(bank, 0.24)
+            return [_record(mid, 0x80, 0x05, int(ratio / 0.0000305), 0,
+                            int(0.75 / 0.0000305))]
+
+        if mid in (0x01, 0x05):
+            # Upstream oxygen sensor switch time.
+            return [_record(mid, 0x07, 0x03, 42, 0, 200)]
+
+        if mid in (0x02, 0x06):
+            return [_record(mid, 0x08, 0x03, 31, 0, 200)]
+
+        return []
 
     def _mode_01_02(self, request: bytes, mode: int) -> str:
         if len(request) < 2:
@@ -237,7 +333,16 @@ class SimulatorTransport(Transport):
             return "NO DATA"
         pid = request[1]
         if pid == 0x00:
-            return _hex(bytes([0x49, 0x00]) + _bitmap(0x00, {0x02, 0x0A}))
+            return _hex(bytes([0x49, 0x00])
+                        + _bitmap(0x00, {0x02, 0x04, 0x06, 0x0A}))
+        if pid == 0x04:
+            payload = bytes([0x49, 0x04, 0x01]) + \
+                CALIBRATION_ID.encode("ascii").ljust(16, b"\x00")
+            return _multiline(payload)
+        if pid == 0x06:
+            payload = bytes([0x49, 0x06, 0x01]) + \
+                bytes.fromhex(CALIBRATION_VERIFICATION)
+            return _hex(payload)
         if pid == 0x02:
             payload = bytes([0x49, 0x02, 0x01]) + self.vin.encode("ascii")
             return _multiline(payload)
@@ -489,6 +594,22 @@ def _bitmap(base: int, supported: set[int]) -> bytes:
         if base + offset in supported:
             bits |= 1 << (32 - offset)
     return bits.to_bytes(4, "big")
+
+
+def _record(mid: int, tid: int, scaling: int, value: int,
+            minimum: int, maximum: int) -> bytes:
+    """One nine-byte mode 06 record."""
+    return bytes([mid, tid, scaling]) + _u16(value) + _u16(minimum) + _u16(maximum)
+
+
+def _mode06_bitmap(base: int, monitors: set[int]) -> bytes:
+    """A supported-monitors record: the bitmap sits in the value+min fields."""
+    bits = 0
+    for offset in range(1, 33):
+        if base + offset in monitors:
+            bits |= 1 << (32 - offset)
+    raw = bits.to_bytes(4, "big")
+    return bytes([base, 0x00, 0x01]) + raw + b"\x00\x00"
 
 
 def _hex(payload: bytes) -> str:

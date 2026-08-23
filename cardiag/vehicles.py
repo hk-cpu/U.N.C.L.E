@@ -63,16 +63,41 @@ class EngineLayout:
 
 
 @dataclass(frozen=True)
+class Step:
+    """One step of a guided procedure."""
+
+    action: str
+    #: What a good result looks like, so the step has a pass/fail.
+    expect: str = ""
+    #: Live PIDs worth watching while doing it.
+    watch: tuple[str, ...] = ()
+    #: Anything that can hurt you or the car if done carelessly.
+    caution: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "action": self.action,
+            "expect": self.expect,
+            "watch": list(self.watch),
+            "caution": self.caution,
+        }
+
+
+@dataclass(frozen=True)
 class KnownIssue:
     """A failure this model is known for, and how to tell if it is yours."""
 
     title: str
     detail: str
+    #: Short identifier so the CLI and UI can name one issue.
+    key: str = ""
     #: Trouble codes that make this issue a live suspect.
     codes: tuple[str, ...] = ()
     #: Codes matched by prefix, for whole families such as misfires.
     code_prefixes: tuple[str, ...] = ()
     checks: tuple[str, ...] = ()
+    #: An ordered diagnosis you can actually follow, where one exists.
+    procedure: tuple[Step, ...] = ()
     severity: str = "moderate"
 
     def matches(self, code: str) -> bool:
@@ -137,11 +162,13 @@ class VehicleProfile:
             "notes": list(self.notes),
             "known_issues": [
                 {
+                    "key": issue.key,
                     "title": issue.title,
                     "detail": issue.detail,
                     "codes": list(issue.codes),
                     "code_prefixes": list(issue.code_prefixes),
                     "checks": list(issue.checks),
+                    "procedure": [step.to_dict() for step in issue.procedure],
                     "severity": issue.severity,
                 }
                 for issue in self.known_issues
@@ -190,6 +217,7 @@ CHARGER_RT_2006 = VehicleProfile(
     known_issues=(
         KnownIssue(
             title="MDS lifter or camshaft lobe failure",
+            key="mds-lifter",
             detail=(
                 "The best known failure on this engine. The lifters for the four "
                 "MDS cylinders (1, 4, 6, 7) can collapse or spall, taking the "
@@ -208,10 +236,53 @@ CHARGER_RT_2006 = VehicleProfile(
                 "Pull the oil filter and look for metal glitter, which means the "
                 "camshaft is already being ground away.",
             ),
+            procedure=(
+                Step(
+                    action="Read the per-cylinder misfire counters "
+                           "('cardiag misfires').",
+                    expect="Counts roughly even across all eight. If cylinders "
+                           "1, 4, 6 and 7 stand out as a group, that is the MDS "
+                           "set and this issue is live.",
+                ),
+                Step(
+                    action="Warm the engine to operating temperature and listen "
+                           "at the top of each bank with the bonnet up.",
+                    expect="A steady tick that rises with engine speed and does "
+                           "not quieten as it warms points at a lifter. A tick "
+                           "that fades once warm is more likely a manifold leak.",
+                    watch=("COOLANT_TEMP", "RPM"),
+                    caution="Keep hands, sleeves and the probe well clear of the "
+                            "belt and fans. Do not lean over a running engine.",
+                ),
+                Step(
+                    action="Swap the coil and both plugs from the suspect "
+                           "cylinder with a neighbouring cylinder, clear the "
+                           "codes, then drive a cycle and re-read.",
+                    expect="If the misfire moves with the parts it was ignition, "
+                           "and this issue is not your problem. If it stays on "
+                           "the same cylinder, it is mechanical.",
+                    caution="Let the engine cool before pulling plugs. Aluminium "
+                            "heads strip easily when hot.",
+                ),
+                Step(
+                    action="Cut open the oil filter, or drain and inspect the "
+                           "oil, looking for metal.",
+                    expect="Clean oil means the camshaft is probably still "
+                           "intact. Glitter or flakes means the lobe is already "
+                           "wearing and the job just got much bigger.",
+                ),
+                Step(
+                    action="Run a compression test on the suspect cylinder.",
+                    expect="A cylinder well below its neighbours confirms the "
+                           "valve is not opening properly - a collapsed lifter "
+                           "or a wiped lobe.",
+                ),
+            ),
             severity="serious",
         ),
         KnownIssue(
             title="Broken exhaust manifold bolts",
+            key="manifold-bolts",
             detail=(
                 "Very common on the 5.7. The bolts fatigue and snap, usually at "
                 "the ends of the manifold, letting exhaust escape ahead of the "
@@ -227,10 +298,47 @@ CHARGER_RT_2006 = VehicleProfile(
                 "Compare bank 1 and bank 2 fuel trims: one bank much leaner than "
                 "the other points at that side's manifold.",
             ),
+            procedure=(
+                Step(
+                    action="Compare long term fuel trim on both banks with the "
+                           "engine warm and idling.",
+                    expect="Both banks within about 10 %. One bank much leaner "
+                           "than the other is the tell - the leak is on that "
+                           "bank's manifold.",
+                    watch=("LONG_FUEL_TRIM_1", "LONG_FUEL_TRIM_2",
+                           "SHORT_FUEL_TRIM_1", "SHORT_FUEL_TRIM_2"),
+                ),
+                Step(
+                    action="Start the engine from stone cold and listen at each "
+                           "manifold.",
+                    expect="A tick that is loud cold and fades as the metal "
+                           "expands and seals is a broken bolt or a blown "
+                           "gasket. That fading is the classic signature.",
+                    caution="Cold start only - the manifolds reach several "
+                            "hundred degrees within minutes.",
+                ),
+                Step(
+                    action="With the engine off and cool, inspect the "
+                           "manifold-to-head joint on the lean bank.",
+                    expect="Black soot streaks radiating from a bolt hole mean "
+                           "that bolt has snapped and exhaust is escaping past "
+                           "the flange.",
+                    caution="Give it an hour after running. These get hot enough "
+                            "to burn through a glove.",
+                ),
+                Step(
+                    action="Count the bolts you can actually see and reach.",
+                    expect="Knowing how many are broken and where decides "
+                           "whether this is an afternoon or a machine shop - "
+                           "the ends are the usual casualties, and a bolt that "
+                           "snapped flush needs extracting.",
+                ),
+            ),
             severity="moderate",
         ),
         KnownIssue(
             title="Oil pressure sending unit failure",
+            key="oil-pressure",
             detail=(
                 "The sender fails far more often than the oil pump does on these "
                 "engines, and gives a low or erratic reading with no other "
@@ -244,10 +352,37 @@ CHARGER_RT_2006 = VehicleProfile(
                 "Fit a mechanical gauge to confirm the real pressure before "
                 "condemning anything.",
             ),
+            procedure=(
+                Step(
+                    action="Check the oil level on the dipstick before anything "
+                           "else.",
+                    expect="Between the marks. Low oil is a real cause of low "
+                           "pressure and costs nothing to rule out.",
+                ),
+                Step(
+                    action="Fit a mechanical oil pressure gauge in place of the "
+                           "sender and read it at idle and at 2000 rpm, warm.",
+                    expect="Healthy pressure at both. If the mechanical gauge "
+                           "reads fine while the ECU reports low, the sender is "
+                           "the fault and the engine is not in danger.",
+                    watch=("RPM", "COOLANT_TEMP"),
+                    caution="Do not keep driving on a genuine low-pressure "
+                            "reading. If the mechanical gauge is also low, stop "
+                            "and do not restart it - that is how bearings die.",
+                ),
+                Step(
+                    action="If the mechanical reading is genuinely low, stop and "
+                           "investigate the pump, pickup screen and bearing "
+                           "clearances before running the engine again.",
+                    expect="This is the one case on this list where continuing "
+                           "to drive turns a repair into a replacement engine.",
+                ),
+            ),
             severity="serious",
         ),
         KnownIssue(
             title="Catalytic converter efficiency",
+            key="catalyst",
             detail=(
                 "With two banks this engine has two catalysts and two downstream "
                 "sensors, so P0420 and P0430 are separate faults on opposite "
@@ -265,6 +400,7 @@ CHARGER_RT_2006 = VehicleProfile(
         ),
         KnownIssue(
             title="Thermostat and cooling system",
+            key="cooling",
             detail=(
                 "A thermostat stuck open keeps the engine below its proper "
                 "temperature, which costs fuel and stops the catalyst monitor ever "
@@ -280,6 +416,7 @@ CHARGER_RT_2006 = VehicleProfile(
         ),
         KnownIssue(
             title="NAG1 transmission faults",
+            key="transmission",
             detail=(
                 "The 5-speed automatic behind this engine stores its own codes. "
                 "Generic OBD-II sees only the P07xx family; the transmission "

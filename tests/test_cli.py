@@ -245,3 +245,83 @@ def test_ports_with_nothing_attached(capsys, monkeypatch):
     code, out = run(capsys, "ports")
     assert code == 1
     assert "--sim" in out
+
+
+# ---------------------------------------------------------------------------
+# Mode 06, calibration and guided procedures
+# ---------------------------------------------------------------------------
+
+def test_tests_command_shows_notable_monitors(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger-wear", "tests")
+    assert code == 0
+    assert "Misfire cylinder 4" in out
+    assert "Catalyst efficiency bank 2" in out
+
+
+def test_tests_command_json(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger", "--json", "tests")
+    payload = json.loads(out)
+    assert code == 0
+    cylinders = {item["cylinder"] for item in payload if item["cylinder"]}
+    assert cylinders == set(range(1, 9))
+
+
+def test_misfires_command_marks_the_deactivated_set(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger-wear", "misfires")
+    assert code == 0
+    assert "cylinder 4" in out
+    assert "deactivated at cruise" in out
+
+
+def test_misfires_command_json_includes_the_mds_set(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger",
+                    "--json", "misfires")
+    payload = json.loads(out)
+    assert payload["deactivated_cylinders"] == [1, 4, 6, 7]
+    assert payload["counts"]["4"] == 2
+
+
+def test_calibration_command(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger", "calibration")
+    assert code == 0
+    assert "68RT0057AA" in out
+
+
+def test_scan_can_skip_mode_06(capsys):
+    code, out = run(capsys, "--sim", "--sim-profile", "charger-wear",
+                    "--json", "scan", "--no-monitors")
+    payload = json.loads(out)
+    assert payload["monitor_tests"] == []
+
+
+def test_fix_lists_available_procedures(capsys):
+    code, out = run(capsys, "--vehicle", "charger", "fix")
+    assert code == 0
+    assert "mds-lifter" in out
+    assert "manifold-bolts" in out
+
+
+def test_fix_walks_a_procedure(capsys):
+    code, out = run(capsys, "--vehicle", "charger", "fix", "mds-lifter")
+    assert code == 0
+    assert "1." in out and "5." in out
+    assert "Caution:" in out
+    assert "cardiag live" in out
+
+
+def test_fix_rejects_an_unknown_procedure(capsys):
+    code, _ = run(capsys, "--vehicle", "charger", "fix", "nonsense")
+    assert code == 2
+
+
+def test_fix_needs_a_profile(capsys):
+    code, _ = run(capsys, "--sim", "fix", "mds-lifter")
+    assert code == 2
+
+
+def test_fix_json(capsys):
+    code, out = run(capsys, "--vehicle", "charger", "--json", "fix", "oil-pressure")
+    payload = json.loads(out)
+    assert payload["key"] == "oil-pressure"
+    assert len(payload["procedure"]) == 3
+    assert any(step["caution"] for step in payload["procedure"])

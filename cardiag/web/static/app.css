@@ -392,3 +392,47 @@ table.data td:last-child { text-align: right; font-variant-numeric: tabular-nums
   main { padding: 1rem .7rem 3rem; }
   .link-state span:not(.dot) { display: none; }
 }
+
+/* -- misfire bars -------------------------------------------------------- */
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 3fr auto;
+  gap: .6rem; align-items: center;
+  padding: .3rem 0;
+}
+.bar-label { font-size: .88rem; color: var(--ink-2); }
+.bar-tag {
+  display: block; font-size: .72rem; color: var(--muted);
+}
+.bar-track {
+  height: 10px; border-radius: 5px;
+  background: var(--accent-soft); overflow: hidden;
+}
+.bar-fill { height: 100%; border-radius: 5px; background: var(--accent); }
+/* The deactivated set gets its own colour so a group standing out is obvious. */
+.bar-fill-group { background: var(--warning); }
+.bar-value {
+  font-variant-numeric: tabular-nums; font-weight: 600;
+  min-width: 3.5em; text-align: right;
+}
+
+/* -- monitor table cells ------------------------------------------------- */
+table.data th {
+  text-align: left; padding: .4rem .6rem;
+  font-size: .78rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); border-bottom: 1px solid var(--rule);
+}
+table.data th:last-child { text-align: right; }
+.cell-warning  { color: var(--warning); font-weight: 600; }
+.cell-critical { color: var(--critical); font-weight: 600; }
+
+/* -- comparison ---------------------------------------------------------- */
+.change-mark {
+  font-weight: 700; font-size: 1.05rem; line-height: 1;
+  width: 1.2em; text-align: center; flex: none;
+}
+.change-mark.change-worse   { color: var(--critical); }
+.change-mark.change-better  { color: var(--good); }
+.change-mark.change-neutral { color: var(--muted); }
+.finding.change-worse  { border-left: 3px solid var(--critical); }
+.finding.change-better { border-left: 3px solid var(--good); }
