@@ -48,9 +48,12 @@ class VehicleInfo:
 class Session:
     """A connection to one vehicle."""
 
-    def __init__(self, url: str = "sim://", timeout: float = 5.0) -> None:
+    def __init__(self, url: str = "sim://", timeout: float = 5.0,
+                 protocol: str | None = None) -> None:
         self.url = url
         self.timeout = timeout
+        #: ELM327 protocol number to force, or None to auto-detect first.
+        self.protocol = protocol
         self.transport = open_transport(url, timeout=timeout)
         self.elm = ELM327(self.transport, timeout=timeout)
         self.adapter: AdapterInfo | None = None
@@ -58,7 +61,7 @@ class Session:
 
     # -- lifecycle ---------------------------------------------------------
     def connect(self) -> AdapterInfo:
-        self.adapter = self.elm.connect()
+        self.adapter = self.elm.connect(protocol=self.protocol)
         return self.adapter
 
     def close(self) -> None:

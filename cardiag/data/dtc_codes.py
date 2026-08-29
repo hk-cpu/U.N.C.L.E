@@ -119,6 +119,7 @@ DESCRIPTIONS: dict[str, str] = {
     "P0403": "Exhaust gas recirculation circuit malfunction",
     "P0404": "Exhaust gas recirculation circuit range/performance",
     "P0405": "Exhaust gas recirculation sensor A circuit low",
+    "P0406": "Exhaust gas recirculation sensor A circuit high",
     "P0410": "Secondary air injection system malfunction",
     "P0411": "Secondary air injection system incorrect flow detected",
     "P0412": "Secondary air injection system switching valve A circuit malfunction",
@@ -144,7 +145,10 @@ DESCRIPTIONS: dict[str, str] = {
     "P0505": "Idle control system malfunction",
     "P0506": "Idle control system RPM lower than expected",
     "P0507": "Idle control system RPM higher than expected",
+    "P0520": "Engine oil pressure sensor/switch circuit malfunction",
     "P0521": "Engine oil pressure sensor/switch range/performance",
+    "P0522": "Engine oil pressure sensor/switch low voltage",
+    "P0523": "Engine oil pressure sensor/switch high voltage",
     "P0562": "System voltage low",
     "P0563": "System voltage high",
     "P0571": "Cruise control/brake switch A circuit malfunction",
@@ -180,6 +184,10 @@ DESCRIPTIONS: dict[str, str] = {
     "P0750": "Shift solenoid A malfunction",
     "P0755": "Shift solenoid B malfunction",
     "P0760": "Shift solenoid C malfunction",
+    # Electronic throttle control
+    "P2110": "Throttle actuator control system - forced limited RPM",
+    "P2172": "Throttle body airflow high - sudden change detected",
+    "P2173": "Throttle body airflow low - sudden change detected",
     # Common network codes
     "U0001": "High speed CAN communication bus",
     "U0100": "Lost communication with engine control module",
@@ -324,6 +332,19 @@ CAUSES: dict[str, list[str]] = {
     "P0563": [
         "Faulty voltage regulator in the alternator",
         "Poor earth strap connection",
+    ],
+    "P0520": [
+        "Failed oil pressure sending unit - far more common than a real "
+        "pressure loss on this engine",
+        "Low oil level",
+        "Wiring or connector fault at the sender",
+        "Genuine low oil pressure - confirm with a mechanical gauge before "
+        "running the engine any further",
+    ],
+    "P2110": [
+        "Carbon build-up in the throttle body",
+        "Failing accelerator pedal position sensor",
+        "Throttle actuator motor fault",
     ],
     "P0741": [
         "Worn torque converter clutch",

@@ -8,7 +8,8 @@ import os
 import sys
 import time
 
-from . import __version__, baseline as baseline_module, console, dtc, mode06
+from . import __version__, baseline as baseline_module, console, dtc, elm327
+from . import mode06
 from . import pids, vehicles, vin as vin_module
 from . import report as report_module
 from .dashboard import Dashboard
@@ -57,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout", type=float, default=5.0,
         help="seconds to wait for the adapter (default: 5)",
+    )
+    parser.add_argument(
+        "--protocol", metavar="N",
+        choices=sorted(elm327.PROTOCOLS),
+        help=(
+            "force an ELM327 protocol number instead of auto-detecting; "
+            "6 is ISO 15765-4 CAN 11-bit 500k, which is what 2005-2008 "
+            "Chrysler LX cars use. Worth setting if a clone adapter reports "
+            "CAN ERROR or BUS INIT errors on auto-detect."
+        ),
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -252,7 +263,8 @@ def _run(argv: list[str] | None) -> int:
         parser.error(f"unknown command: {command}")
 
     try:
-        with Session(url, timeout=args.timeout) as session:
+        with Session(url, timeout=args.timeout,
+                     protocol=args.protocol) as session:
             return handler(args, session)
     except TransportError as exc:
         return _fail(str(exc))

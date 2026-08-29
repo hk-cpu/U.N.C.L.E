@@ -444,13 +444,27 @@ CHARGER_RT_2006 = VehicleProfile(
                  "vacuum leak.",
         "P0420": "Bank 1 catalyst - driver's side.",
         "P0430": "Bank 2 catalyst - passenger's side.",
+        "P0520": "The oil pressure sender is a known failure on this engine, "
+                 "and fails far more often than the oil pump does. Confirm "
+                 "with a mechanical gauge before assuming the worst - but do "
+                 "not simply ignore it either.",
+        "P0700": "This is the transmission module asking for the warning "
+                 "light, not a fault in itself. The NAG1 stores its own codes, "
+                 "and generic OBD-II only sees the P07xx family - the detail "
+                 "needs a Chrysler-capable tool.",
+        "P2110": "Limp mode: the throttle is being held to a reduced opening. "
+                 "Usually a dirty throttle body or a pedal position sensor on "
+                 "this platform.",
     },
     thresholds=Thresholds(
-        # The 5.7 runs deliberately warm; high 90s is normal, not a fault.
+        # The 5.7 runs deliberately warm - the mid to high 90s is normal, not a
+        # fault. Sustained running above 110 degC in traffic is the point at
+        # which the cooling system is worth investigating, so that is the
+        # warning line rather than something higher.
         coolant_normal_low=85.0,
-        coolant_normal_high=108.0,
-        coolant_warning=113.0,
-        coolant_critical=120.0,
+        coolant_normal_high=105.0,
+        coolant_warning=110.0,
+        coolant_critical=118.0,
     ),
     # Positions are 1-based, the way VINs are written. 2B3 is a Canadian-built
     # Dodge passenger car (these were made in Brampton), position 8 is the

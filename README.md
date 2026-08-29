@@ -163,6 +163,29 @@ PCM was reflashed, by you or by anyone else:
 Snapshots live in `~/.local/share/cardiag/baselines.db` (override with
 `--store` or `$CARDIAG_HOME`).
 
+### Raw CAN, and where cardiag stops
+
+The OBD port on this car carries **diagnostic traffic only**. The powertrain
+bus that modules actually broadcast on (CAN-C) sits behind the Front Control
+Module gateway, and the body bus (CAN-B, on DLC pins 3 and 11) is a separate
+network at a different bit rate. An ELM327 is a diagnostic translator, not a
+sniffer — it cannot see either of those, whatever you plug it into.
+
+So a custom gauge cluster or a steering-wheel-button project needs different
+hardware: a CAN interface tapped at the FCM or the DLC's body pins, and a tool
+like SavvyCAN to reverse the frames into a DBC.
+
+What cardiag *is* good for in that project is the correlation step. Log known
+values from the diagnostic side while capturing raw frames on the other, and
+the broadcast frames carrying RPM and speed fall out of the comparison:
+
+```bash
+cardiag live RPM SPEED --refresh 0.1 --log drive.csv
+```
+
+The CSV timestamps are Unix epoch seconds to the millisecond, which lines up
+directly against a SavvyCAN or `candump` capture.
+
 ### What this does not do
 
 **It does not write calibrations to the ECU.** That is a deliberate limit, not
@@ -272,6 +295,18 @@ cardiag scan
 **Turn the ignition on.** The adapter powers up from the OBD port whether or not
 the car is awake, so a connected adapter and a responding ECU are two different
 things. For live data, have the engine running.
+
+**If it connects to the adapter but not the car**, name the protocol. Cheap
+ELM327 clones are known to fail auto-detection against Chrysler's CAN timing
+while working perfectly once told what to speak:
+
+```bash
+cardiag --protocol 6 scan     # ISO 15765-4 CAN, 11 bit, 500 kbaud
+```
+
+cardiag already retries protocols 6 and 7 by itself when auto-detect fails, and
+the error tells you what it tried — `--protocol` is there for when you want to
+skip straight past the guessing.
 
 ### Commands
 

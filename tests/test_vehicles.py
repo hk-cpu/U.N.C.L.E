@@ -172,9 +172,20 @@ def test_generic_car_gets_no_bank_side_wording():
         assert "bank" not in finding.detail.lower()
 
 
-def test_hemi_thresholds_tolerate_a_hotter_engine():
+def test_hemi_expects_a_higher_minimum_running_temperature():
+    """The HEMI runs warm, but not hotter at the top end.
+
+    An earlier guess here had the warning line at 113 degC. The vehicle
+    reference for this car puts it at 110 - sustained running above that is
+    the point to investigate the cooling system - so the profile raises the
+    bottom of the normal band and leaves the top where the generic rule has it.
+    """
     generic = vehicles.Thresholds()
-    assert CHARGER.thresholds.coolant_warning > generic.coolant_warning
+    thresholds = CHARGER.thresholds
+
+    assert thresholds.coolant_normal_low > generic.coolant_normal_low
+    assert thresholds.coolant_warning == 110.0
+    assert thresholds.coolant_critical == 118.0
 
 
 # ---------------------------------------------------------------------------
@@ -259,3 +270,27 @@ def test_vin_command_reports_a_bad_vin(capsys):
     code, out = run(capsys, "vin", broken)
     assert code == 1
     assert "INVALID" in out or "check digit" in out
+
+
+def test_reference_documented_codes_are_described():
+    """Codes the vehicle reference calls out as common on this engine."""
+    from cardiag import dtc
+
+    for code in ("P0520", "P0406", "P2110", "P0700", "P0133", "P0456"):
+        described = dtc.describe(code)
+        assert described.generic_fallback is False, f"{code} has no description"
+
+
+def test_the_oil_pressure_sender_is_named_before_the_pump():
+    from cardiag import dtc
+
+    causes = dtc.describe("P0520").causes
+    assert causes, "P0520 is common enough on this engine to warrant causes"
+    # The sender fails far more often than the pump; say so first.
+    assert "sender" in causes[0].lower() or "sending" in causes[0].lower()
+
+
+def test_p0700_is_explained_as_a_pointer_to_the_transmission_module():
+    note = CHARGER.code_notes["P0700"]
+    assert "transmission" in note.lower()
+    assert "generic" in note.lower()

@@ -30,6 +30,11 @@ _NOISE = re.compile(r"^(SEARCHING\.*|BUS INIT\.*|OK)$", re.IGNORECASE)
 
 _MULTILINE = re.compile(r"^([0-9A-F]):([0-9A-F\s]*)$", re.IGNORECASE)
 
+#: Tried in order after auto-detection fails. Protocol 6 (ISO 15765-4 CAN,
+#: 11 bit, 500 kbaud) covers everything from the mid-2000s onward and is the
+#: one clone adapters most often need stating outright; 7 is its 29-bit twin.
+FALLBACK_PROTOCOLS = ("6", "7")
+
 PROTOCOLS = {
     "0": "automatic",
     "1": "SAE J1850 PWM (41.6 kbaud)",
@@ -79,8 +84,15 @@ class ELM327:
         self._reply_counts: dict[str, int] = {}
 
     # -- session -----------------------------------------------------------
-    def connect(self) -> AdapterInfo:
-        """Reset the adapter, configure it, and negotiate a vehicle protocol."""
+    def connect(self, protocol: str | None = None) -> AdapterInfo:
+        """Reset the adapter, configure it, and negotiate a vehicle protocol.
+
+        ``protocol`` forces an ELM327 protocol number (``"6"`` is ISO 15765-4
+        CAN, 11 bit, 500 kbaud). Left unset, auto-detection is tried first and
+        the protocols in :data:`FALLBACK_PROTOCOLS` after it: cheap ELM327
+        clones are known to fail auto-detection against some makes' CAN timing
+        while working perfectly once the protocol is stated outright.
+        """
         self.transport.open()
         self.transport.flush_input()
 
@@ -91,17 +103,35 @@ class ELM327:
         for command in ("ATE0", "ATL0", "ATS0", "ATH0", "ATST64"):
             self._at(command)
 
-        # ATSP0 lets the adapter work out the vehicle's protocol itself.
-        self._at("ATSP0")
+        attempts = [protocol] if protocol else [None, *FALLBACK_PROTOCOLS]
+        failures: list[str] = []
 
-        protocol_id, protocol = self._negotiate_protocol()
-        self.info = AdapterInfo(
-            identifier=identifier,
-            protocol=protocol,
-            protocol_id=protocol_id,
-            voltage=self.read_voltage(),
+        for attempt in attempts:
+            self._at(f"ATSP{attempt}" if attempt else "ATSP0")
+            self._reply_counts.clear()      # frame counts differ per protocol
+            try:
+                protocol_id, described = self._negotiate_protocol()
+            except ObdError as exc:
+                failures.append(
+                    f"{'auto-detect' if attempt is None else f'protocol {attempt}'}: {exc}"
+                )
+                continue
+
+            self.info = AdapterInfo(
+                identifier=identifier,
+                protocol=described,
+                protocol_id=protocol_id,
+                voltage=self.read_voltage(),
+            )
+            return self.info
+
+        raise ObdError(
+            "connected to the adapter but not to the car.\n"
+            + "\n".join(f"  {failure}" for failure in failures)
+            + "\nTurn the ignition to ON (engine running is best). If it still "
+            "fails, name the protocol explicitly - a 2006 Chrysler LX car is "
+            "protocol 6."
         )
-        return self.info
 
     def close(self) -> None:
         try:
@@ -133,13 +163,9 @@ class ELM327:
 
     def _negotiate_protocol(self) -> tuple[str, str]:
         """Force protocol detection with a real request, then ask what it chose."""
-        try:
-            self.request(0x01, 0x00)
-        except ObdError as exc:
-            raise ObdError(
-                f"connected to the adapter but not to the car: {exc}\n"
-                "Turn the ignition to ON (engine running is best) and try again."
-            ) from exc
+        # A supported-PID request is the cheapest thing every ECU answers, so
+        # it doubles as the proof that this protocol actually works.
+        self.request(0x01, 0x00)
 
         raw = self._at("ATDPN").strip().upper()
         # ATDPN answers e.g. "A6" - the leading A means it was auto-detected.

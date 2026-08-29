@@ -138,3 +138,85 @@ def test_clear_codes_requires_an_acknowledgement():
     elm = ELM327(FakeTransport(["NO DATA"]))
     with pytest.raises(ObdError):
         elm.clear_codes()
+
+
+# ---------------------------------------------------------------------------
+# Protocol negotiation and fallback
+# ---------------------------------------------------------------------------
+
+class ScriptedAdapter(Transport):
+    """An adapter whose auto-detect fails but which works on a named protocol.
+
+    This is the documented behaviour of cheap ELM327 clones against some makes'
+    CAN timing: ``ATSP0`` yields CAN ERROR, stating the protocol works fine.
+    """
+
+    def __init__(self, working_protocol="6"):
+        super().__init__(timeout=1.0)
+        self.working_protocol = working_protocol
+        self.selected = None
+        self.sent = []
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def _write_raw(self, data):
+        self.sent.append(data.decode().strip())
+
+    def _read_raw(self, timeout):
+        last = self.sent[-1] if self.sent else ""
+        if last.startswith("ATSP"):
+            self.selected = last[4:]
+            return b"OK\r>"
+        if last == "ATDPN":
+            return f"{self.selected}\r>".encode()
+        if last.startswith("AT"):
+            return b"ELM327 v1.5\r>" if last in ("ATZ", "ATI") else b"OK\r>"
+        if last.startswith("0100"):
+            if self.selected != self.working_protocol:
+                return b"CAN ERROR\r>"
+            return b"4100BE3FA813\r>"
+        return b"NO DATA\r>"
+
+    @property
+    def protocols_tried(self):
+        return [s[4:] for s in self.sent if s.startswith("ATSP")]
+
+
+def test_auto_detect_is_tried_first():
+    transport = ScriptedAdapter(working_protocol="0")
+    info = ELM327(transport).connect()
+    assert transport.protocols_tried == ["0"]
+    assert info.protocol_id == "0"
+
+
+def test_falls_back_to_a_named_protocol_when_auto_detect_fails():
+    transport = ScriptedAdapter(working_protocol="6")
+    info = ELM327(transport).connect()
+
+    assert transport.protocols_tried == ["0", "6"]
+    assert info.protocol_id == "6"
+    assert "CAN" in info.protocol
+
+
+def test_a_forced_protocol_skips_auto_detect():
+    transport = ScriptedAdapter(working_protocol="6")
+    info = ELM327(transport).connect(protocol="6")
+
+    assert transport.protocols_tried == ["6"]
+    assert info.protocol_id == "6"
+
+
+def test_every_attempt_failing_reports_what_was_tried():
+    transport = ScriptedAdapter(working_protocol="nothing works")
+    with pytest.raises(ObdError) as excinfo:
+        ELM327(transport).connect()
+
+    message = str(excinfo.value)
+    assert "auto-detect" in message
+    assert "protocol 6" in message
+    # The advice has to name the protocol worth forcing.
+    assert "protocol 6" in message

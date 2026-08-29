@@ -207,6 +207,24 @@ def _fuel_type(data: bytes) -> str:
     return FUEL_TYPES.get(data[0], f"unknown ({data[0]})")
 
 
+#: PID 1C. Only the values likely to be met in practice are named.
+OBD_STANDARDS = {
+    1: "OBD-II (California ARB)",
+    2: "OBD (US EPA)",
+    3: "OBD and OBD-II",
+    4: "OBD-I",
+    5: "not OBD compliant",
+    6: "EOBD (Europe)",
+    7: "EOBD and OBD-II",
+    8: "EOBD and OBD",
+    9: "EOBD, OBD and OBD-II",
+    10: "JOBD (Japan)",
+    11: "JOBD and OBD-II",
+    12: "JOBD and EOBD",
+    13: "JOBD, EOBD and OBD-II",
+}
+
+
 def _oxygen_sensors_present(data: bytes) -> list[str]:
     """Bitmap of which of the four sensors on each of two banks are fitted."""
     present = []
@@ -351,6 +369,8 @@ _TABLE: list[PID] = [
     _pid(0x19, "O2_B2S2", "Oxygen sensor 2 (bank 2)", 2, _oxygen_sensor_voltage, "V"),
     _pid(0x1A, "O2_B2S3", "Oxygen sensor 3 (bank 2)", 2, _oxygen_sensor_voltage, "V"),
     _pid(0x1B, "O2_B2S4", "Oxygen sensor 4 (bank 2)", 2, _oxygen_sensor_voltage, "V"),
+    _pid(0x1C, "OBD_STANDARD", "OBD standard this vehicle conforms to", 1,
+         lambda d: OBD_STANDARDS.get(d[0], f"unknown ({d[0]})")),
     _pid(0x1F, "RUN_TIME", "Run time since engine start", 2, _u16, "s", 0, 65535, priority=20),
     _pid(0x20, "PIDS_B", "Supported PIDs 21-40", 4, _supported_bitmap(0x20)),
     _pid(0x21, "DISTANCE_W_MIL", "Distance travelled with the warning light on", 2, _u16, "km", 0, 65535, priority=30),
