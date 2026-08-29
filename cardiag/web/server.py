@@ -73,6 +73,18 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: bytes, content_type: str,
               extra_headers: dict[str, str] | None = None,
               cacheable: bool = False) -> None:
+        try:
+            self._send_now(status, body, content_type, extra_headers, cacheable)
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser hung up mid-reply: a closed window, a reloaded page,
+            # or a live poll abandoned when the tab went away. All of those are
+            # normal, and none of them deserve a traceback on the console the
+            # user is watching.
+            self.close_connection = True
+
+    def _send_now(self, status: int, body: bytes, content_type: str,
+                  extra_headers: dict[str, str] | None,
+                  cacheable: bool) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -186,6 +198,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.service.disconnect())
         elif path == "/api/live/start":
             self._json(self.service.start_live(body.get("channels")))
+        elif path == "/api/gauges/start":
+            self._json(self.service.start_gauges())
         elif path == "/api/live/stop":
             self._json(self.service.stop_live())
         elif path == "/api/baselines/save":

@@ -436,3 +436,103 @@ table.data th:last-child { text-align: right; }
 .change-mark.change-neutral { color: var(--muted); }
 .finding.change-worse  { border-left: 3px solid var(--critical); }
 .finding.change-better { border-left: 3px solid var(--good); }
+
+/* -- gauge cluster -------------------------------------------------------
+   A car dashboard is the one place a radial dial beats a bar: the sweep angle
+   is what a driver reads without focusing, and the red zone's position is
+   muscle memory. Everything secondary stays as plain numbers. */
+
+.cluster {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.shift-light {
+  height: 10px; border-radius: 5px; margin-bottom: 1rem;
+  background: var(--surface-sunk);
+  transition: background-color .08s linear;
+}
+.shift-light.is-armed { background: var(--warning); }
+.shift-light.is-lit   { background: var(--critical); }
+
+.dials {
+  display: grid; gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.dial { margin: 0; position: relative; }
+.dial-face { display: block; width: 100%; height: auto; }
+
+/* The value sits in the middle of the dial, where the ring of tick numbers
+   leaves a clear disc. Sized to stay inside it rather than to fill the tile. */
+.dial-caption {
+  position: absolute; left: 0; right: 0; top: 50%;
+  transform: translateY(-52%);
+  text-align: center; pointer-events: none;
+}
+.dial-value {
+  display: block; font-size: clamp(1.7rem, 6.5vw, 2.7rem); font-weight: 650;
+  letter-spacing: -.03em; line-height: 1; color: var(--ink);
+}
+.dial-unit { font-size: .8rem; color: var(--muted); letter-spacing: .08em; }
+
+/* Needle and arc are drawn by script; these are their shared looks. */
+.dial-track   { fill: none; stroke: var(--surface-sunk); }
+.dial-arc     { fill: none; stroke: var(--accent); transition: stroke .1s linear; }
+.dial-arc.is-warning  { stroke: var(--warning); }
+.dial-arc.is-critical { stroke: var(--critical); }
+.dial-redline { fill: none; stroke: var(--critical); opacity: .55; }
+.dial-tick    { stroke: var(--muted); opacity: .5; }
+.dial-label   { fill: var(--muted); font-size: 12px; text-anchor: middle;
+                font-family: var(--sans); }
+.dial-scale   { fill: var(--muted); font-size: 9px; text-anchor: middle;
+                font-family: var(--sans); letter-spacing: .06em; }
+
+.readouts {
+  display: grid; gap: .5rem; margin-top: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+.readout {
+  background: var(--surface-sunk); border-radius: 8px;
+  padding: .5rem .7rem; text-align: center;
+}
+.readout-label {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted);
+}
+.readout-value {
+  font-size: 1.35rem; font-weight: 620; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.readout.is-warning  .readout-value { color: var(--warning); }
+.readout.is-critical .readout-value { color: var(--critical); }
+
+.sprint {
+  margin-top: 1rem; padding: .6rem .8rem; text-align: center;
+  background: var(--surface-sunk); border-radius: 8px;
+}
+.sprint-label {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted);
+}
+.sprint-value {
+  font-size: 1.6rem; font-weight: 650; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.sprint-note { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
+
+/* Full screen: the cluster is the only thing on the glass. */
+.cluster:fullscreen {
+  display: flex; flex-direction: column; justify-content: center;
+  border: 0; border-radius: 0; padding: 2vh 3vw;
+  background: #000;               /* a car at night; not a themed surface */
+  height: 100%; width: 100%;
+}
+.cluster:fullscreen .dial-value { font-size: clamp(2rem, 8vh, 4.4rem); }
+.cluster:fullscreen .readout-value { font-size: clamp(1.2rem, 4vh, 2rem); }
+.cluster:fullscreen .shift-light { height: 3vh; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dial-arc, .shift-light { transition: none; }
+}

@@ -45,12 +45,14 @@ rather than showing stale readings — vehicle data is never cached).
 The manifest also registers shortcuts, so a long-press or right-click on the
 icon jumps straight to Health, Live or Codes.
 
-Seven tabs:
+Eight tabs:
 
 - **Connect** — pick your adapter from a list, or click a simulated car to try
   it with no hardware.
 - **Health** — the full diagnosis: findings ranked worst-first, each with what
   to check, plus readiness monitors, live data and the freeze frame.
+- **Gauges** — a full-screen instrument cluster: tachometer, speedometer, a
+  shift light, and coolant, oil, voltage and intake as plain numbers.
 - **Live** — stat tiles with meters and sparklines, one per parameter. Values
   that leave their normal band turn amber or red, so a lean bank is visible at
   a glance instead of needing to be spotted in a column of numbers.
@@ -87,6 +89,35 @@ icon.
 
 Nothing is sent anywhere. The server runs on your machine and talks to your
 adapter; it binds to localhost unless you ask otherwise.
+
+### The gauge cluster
+
+The **Gauges** tab is the CAN bus build guide's *Gauge v1: OBD-polling fallback*
+— the ★☆☆ starting point that needs no hardware beyond the ELM327 you already
+have. Start it, hit *Full screen*, and prop the phone where you can see it.
+
+- **Tachometer** with the red zone drawn where the 5.7's limiter is (5800 rpm),
+  in its fixed place on the dial rather than appearing only when you reach it.
+- **Shift light** across the top: amber from 5400 rpm, red at the limiter.
+- **Speedometer**, in km/h, as the PID reports it.
+- **Coolant, oil, voltage and intake** as numbers, turning amber and red on the
+  same thresholds the rest of the app uses. Sustained coolant above 110 °C is
+  the point to investigate the cooling system, and the readout says so by
+  changing colour.
+- **0–100 km/h timer**, armed whenever the car is stopped.
+- The screen is kept awake while it runs.
+
+It polls six channels instead of the Live tab's full set, at 20 Hz instead of
+2 Hz, because a dial that lags is worse than no dial.
+
+Two honest limits. The redline is the published figure, not a measured cutoff —
+it is where the dial paints red, not a promise about your engine. And the 0–100
+timer reads off the poll stream: an ELM327 answers a speed request every 50 ms
+at best, so treat the number as indicative, not as a drag box result.
+
+The guide's *Gauge v2* — decoding RPM and speed straight off CAN-C broadcasts at
+ten times the rate — needs the ESP32 hardware, not this adapter. See *Raw CAN,
+and where cardiag stops* below.
 
 ### Catching it before it breaks
 
@@ -171,9 +202,11 @@ Module gateway, and the body bus (CAN-B, on DLC pins 3 and 11) is a separate
 network at a different bit rate. An ELM327 is a diagnostic translator, not a
 sniffer — it cannot see either of those, whatever you plug it into.
 
-So a custom gauge cluster or a steering-wheel-button project needs different
-hardware: a CAN interface tapped at the FCM or the DLC's body pins, and a tool
-like SavvyCAN to reverse the frames into a DBC.
+So the **Gauges** tab polls — which is exactly the guide's Gauge v1, and works
+today with what you own. Going faster than polling, or reading anything the
+diagnostic layer does not expose (steering-wheel buttons, MDS state, gear
+position), needs different hardware: a CAN interface tapped at the FCM or the
+DLC's body pins, and a tool like SavvyCAN to reverse the frames into a DBC.
 
 What cardiag *is* good for in that project is the correlation step. Log known
 values from the diagnostic side while capturing raw frames on the other, and

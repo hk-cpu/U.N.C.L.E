@@ -131,7 +131,8 @@
       tab.setAttribute("aria-selected", String(active));
     });
     // Sampling only makes sense while its view is on screen.
-    if (name !== "live" && state.sampling) stopLive();
+    if (name !== "live" && state.sampling && !gauges.running) stopLive();
+    if (name !== "gauges" && gauges.running) stopGauges();
     if (name === "vehicle") loadVehicle();
     if (name === "baselines") loadBaselines();
   }
@@ -583,6 +584,304 @@
     }
   });
 
+  /* ------------------------------------------------------ gauge cluster */
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const DIAL_START = 140;          // degrees; sweeps clockwise from lower left
+  const DIAL_SWEEP = 260;
+
+  const gauges = {
+    running: false,
+    timer: null,
+    wakeLock: null,
+    engine: {},
+    dials: {},
+  };
+
+  function svg(tag, attrs) {
+    const node = document.createElementNS(SVG_NS, tag);
+    Object.entries(attrs).forEach(([key, value]) =>
+      node.setAttribute(key, String(value)));
+    return node;
+  }
+
+  // Polar helper: 0 at the dial's start, 1 at its end.
+  function dialPoint(fraction, radius) {
+    const angle = ((DIAL_START + fraction * DIAL_SWEEP) * Math.PI) / 180;
+    return [100 + Math.cos(angle) * radius, 100 + Math.sin(angle) * radius];
+  }
+
+  function arcPath(from, to, radius) {
+    const [x1, y1] = dialPoint(from, radius);
+    const [x2, y2] = dialPoint(to, radius);
+    const large = (to - from) * DIAL_SWEEP > 180 ? 1 : 0;
+    return `M ${x1} ${y1} A ${radius} ${radius} 0 ${large} 1 ${x2} ${y2}`;
+  }
+
+  function buildDial(element, { max, redline, step, per = 1 }) {
+    clear(element);
+    // A narrow band pushed to the edge leaves the numbers room to sit on their
+    // own radius. Adjacent labels crowd each other otherwise - 1000 and 2000
+    // are only 32 degrees apart at the top of the sweep.
+    const radius = 84;
+    const width = 11;
+
+    element.appendChild(svg("path", {
+      d: arcPath(0, 1, radius), class: "dial-track",
+      "stroke-width": width, "stroke-linecap": "round",
+    }));
+
+    // The red zone is drawn once, underneath, so its position is fixed the way
+    // it is on a real dial rather than appearing only when you reach it.
+    if (redline && redline < max) {
+      element.appendChild(svg("path", {
+        d: arcPath(redline / max, 1, radius), class: "dial-redline",
+        "stroke-width": width, "stroke-linecap": "round",
+      }));
+    }
+
+    const arc = svg("path", {
+      d: arcPath(0, 0.0001, radius), class: "dial-arc",
+      "stroke-width": width, "stroke-linecap": "round",
+    });
+    element.appendChild(arc);
+
+    for (let value = 0; value <= max; value += step) {
+      const fraction = value / max;
+      const [ox, oy] = dialPoint(fraction, radius - width / 2 - 3);
+      const [ix, iy] = dialPoint(fraction, radius - width / 2 - 9);
+      element.appendChild(svg("line", {
+        x1: ox, y1: oy, x2: ix, y2: iy, class: "dial-tick", "stroke-width": 2,
+      }));
+
+      // Tachometers count in thousands for a reason: "8" fits where "8000"
+      // runs into the band beside it.
+      const text = String(value / per);
+      // A label out at 3 o'clock reaches sideways towards the band, so the
+      // wider it is the further in it has to sit. Vertically it never does.
+      const inset = text.length * 3.4;
+      const labelRadius = radius - width - 12;
+      const [, ly] = dialPoint(fraction, labelRadius);
+      const [lx] = dialPoint(fraction, labelRadius - inset);
+
+      const label = svg("text", { x: lx, y: ly + 4, class: "dial-label" });
+      label.textContent = text;
+      element.appendChild(label);
+    }
+
+    // The centre readout is the true number, so the dial has to say what its
+    // own numbers are counting in.
+    if (per !== 1) {
+      const scale = svg("text", { x: 100, y: 180, class: "dial-scale" });
+      scale.textContent = `×${per}`;
+      element.appendChild(scale);
+    }
+
+    return { arc, max, radius };
+  }
+
+  function setDial(dial, value, severity) {
+    if (!dial) return;
+    const fraction = Math.max(0, Math.min(1, (value || 0) / dial.max));
+    dial.arc.setAttribute("d", arcPath(0, Math.max(fraction, 0.0001), dial.radius));
+    dial.arc.classList.toggle("is-warning", severity === "warning");
+    dial.arc.classList.toggle("is-critical", severity === "critical");
+  }
+
+  async function startGauges() {
+    const button = $("gauge-toggle");
+    busy(button, true, "Starting");
+    try {
+      const started = await post("/api/gauges/start", {});
+      gauges.engine = started.engine || {};
+      gauges.running = true;
+      state.sampling = true;
+
+      const redline = gauges.engine.redline_rpm;
+      // Round the dial up to a whole thousand past the red zone.
+      const rpmMax = Math.ceil(((redline || 7000) + 700) / 1000) * 1000;
+
+      gauges.dials.rpm = buildDial($("dial-rpm"),
+        { max: rpmMax, redline, step: 1000, per: 1000 });
+      gauges.dials.speed = buildDial($("dial-speed"),
+        { max: 220, redline: null, step: 40 });
+
+      Object.assign(sprint,
+        { armed: false, startedAt: null, previous: null, best: null });
+      $("sprint-value").textContent = "—";
+
+      $("cluster").hidden = false;
+      $("gauge-hint").hidden = true;
+      $("gauge-toggle").textContent = "Stop";
+      await requestWakeLock();
+
+      pollGauges();
+      gauges.timer = setInterval(pollGauges, 120);
+    } catch (exc) {
+      toast(exc.message);
+    } finally {
+      busy(button, false);
+      if (gauges.running) $("gauge-toggle").textContent = "Stop";
+    }
+  }
+
+  async function stopGauges() {
+    clearInterval(gauges.timer);
+    gauges.timer = null;
+    if (!gauges.running) return;
+
+    gauges.running = false;
+    state.sampling = false;
+    $("gauge-toggle").textContent = "Start";
+    releaseWakeLock();
+    try { await post("/api/live/stop"); } catch { /* already stopped */ }
+  }
+
+  $("gauge-toggle").addEventListener("click", () => {
+    gauges.running ? stopGauges() : startGauges();
+  });
+
+  $("gauge-fullscreen").addEventListener("click", () => {
+    const cluster = $("cluster");
+    if (document.fullscreenElement) document.exitFullscreen();
+    else cluster.requestFullscreen?.().catch(() => toast("Full screen was refused"));
+  });
+
+  // A dashboard that dims after 30 seconds is not a dashboard.
+  async function requestWakeLock() {
+    try {
+      gauges.wakeLock = await navigator.wakeLock?.request("screen");
+    } catch { /* unsupported, or denied on an unfocused tab */ }
+  }
+
+  function releaseWakeLock() {
+    try { gauges.wakeLock?.release(); } catch { /* already gone */ }
+    gauges.wakeLock = null;
+  }
+
+  // The lock is dropped whenever the tab is hidden; take it back on return.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && gauges.running) requestWakeLock();
+  });
+
+  const READOUTS = [
+    ["COOLANT_TEMP", "Coolant"],
+    ["OIL_TEMP", "Oil"],
+    ["CONTROL_MODULE_VOLTAGE", "Volts"],
+    ["INTAKE_TEMP", "Intake"],
+  ];
+
+  async function pollGauges() {
+    let snapshot;
+    try {
+      snapshot = await get("/api/live");
+    } catch {
+      return;                      // a dropped poll is not worth a banner
+    }
+
+    const byName = {};
+    snapshot.channels.forEach((channel) => { byName[channel.name] = channel; });
+
+    const rpm = byName.RPM?.value;
+    const speed = byName.SPEED?.value;
+
+    setDial(gauges.dials.rpm, rpm, rpmSeverity(rpm));
+    setDial(gauges.dials.speed, speed, "neutral");
+
+    $("rpm-value").textContent = rpm == null ? "—" : Math.round(rpm).toLocaleString();
+    $("speed-value").textContent = speed == null ? "—" : Math.round(speed);
+
+    updateShiftLight(rpm);
+    updateSprint(speed, snapshot.at);
+    renderReadouts(byName);
+
+    $("gauge-meta").textContent = `${snapshot.samples} samples`;
+  }
+
+  /* The 0-100 timer the build guide pairs with the shift light. It runs off the
+     same poll stream, so it is honest about being indicative: an ELM327 answers
+     a speed request roughly every 50 ms at best, and the browser sees every
+     other one. Interpolating across the 100 km/h crossing recovers some of
+     that, but this is not a drag box and the caption says so. */
+  const SPRINT_TARGET = 100;
+  const sprint = { armed: false, startedAt: null, previous: null, best: null };
+
+  function updateSprint(speed, at) {
+    if (speed == null || at == null) return;
+    const previous = sprint.previous;
+    sprint.previous = { speed, at };
+
+    if (speed === 0) {
+      sprint.armed = true;                 // stopped: ready for the next run
+      sprint.startedAt = at;
+      return;
+    }
+    if (!sprint.armed) return;
+
+    if (sprint.startedAt === null) return;
+    if (speed < SPRINT_TARGET) return;
+
+    // Cross the line between the last sample below the target and this one.
+    let crossedAt = at;
+    if (previous && previous.speed < SPRINT_TARGET && at > previous.at) {
+      const span = speed - previous.speed;
+      const share = span > 0 ? (SPRINT_TARGET - previous.speed) / span : 0;
+      crossedAt = previous.at + (at - previous.at) * share;
+    }
+
+    const seconds = crossedAt - sprint.startedAt;
+    sprint.armed = false;                  // one result per launch
+    if (!(seconds > 0)) return;
+    if (sprint.best === null || seconds < sprint.best) sprint.best = seconds;
+
+    $("sprint-value").textContent = `${seconds.toFixed(2)} s`;
+    $("sprint-note").textContent = sprint.best < seconds
+      ? `Best this session ${sprint.best.toFixed(2)} s. Indicative only.`
+      : "Indicative only - timed from the poll stream, not a drag box.";
+  }
+
+  function rpmSeverity(rpm) {
+    const { redline, shift } = { redline: gauges.engine.redline_rpm,
+                                 shift: gauges.engine.shift_rpm };
+    if (rpm == null) return "neutral";
+    if (redline && rpm >= redline) return "critical";
+    if (shift && rpm >= shift) return "warning";
+    return "neutral";
+  }
+
+  function updateShiftLight(rpm) {
+    const light = $("shift-light");
+    const { redline_rpm: redline, shift_rpm: shift } = gauges.engine;
+    light.classList.toggle("is-armed",
+      Boolean(shift && rpm != null && rpm >= shift && (!redline || rpm < redline)));
+    light.classList.toggle("is-lit",
+      Boolean(redline && rpm != null && rpm >= redline));
+  }
+
+  function renderReadouts(byName) {
+    const host = $("readouts");
+    if (!host.childElementCount) {
+      READOUTS.forEach(([name, label]) => {
+        const cell = el("div", "readout");
+        cell.dataset.name = name;
+        cell.appendChild(el("div", "readout-label", label));
+        cell.appendChild(el("div", "readout-value", "—"));
+        host.appendChild(cell);
+      });
+    }
+
+    READOUTS.forEach(([name]) => {
+      const cell = host.querySelector(`[data-name="${name}"]`);
+      const channel = byName[name];
+      const value = cell.querySelector(".readout-value");
+      value.textContent = channel?.formatted ?? "—";
+
+      const severity = channel?.severity || "neutral";
+      cell.classList.toggle("is-warning", severity === "warning");
+      cell.classList.toggle("is-critical", severity === "critical");
+    });
+  }
+
   /* -------------------------------------------------------- mode 06 tests */
 
   async function readTests() {
@@ -917,7 +1216,8 @@
     if (state.sampling) navigator.sendBeacon?.("/api/live/stop");
   });
 
-  const VIEWS = ["connect", "scan", "live", "codes", "tests", "baselines", "vehicle"];
+  const VIEWS = ["connect", "scan", "gauges", "live", "codes", "tests",
+                 "baselines", "vehicle"];
 
   (async () => {
     await loadPorts();

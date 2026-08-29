@@ -42,6 +42,23 @@ def test_hemi_has_two_plugs_per_cylinder():
     assert CHARGER.engine.total_plugs == 16
 
 
+def test_the_tachometer_red_zone_leaves_room_to_shift():
+    engine = CHARGER.engine
+    assert engine.redline_rpm == 5800
+    assert engine.shift_rpm is not None
+    # A shift light that comes on at the limiter is a shift light you miss.
+    assert engine.shift_rpm < engine.redline_rpm
+
+
+def test_a_generic_engine_claims_no_redline():
+    """Better a dial with no red zone than one drawn from a guess."""
+    generic = vehicles.EngineLayout(
+        name="inline four", cylinders=4,
+        cylinder_bank={c: 1 for c in range(1, 5)}, bank_side={1: "the engine"})
+    assert generic.redline_rpm is None
+    assert generic.shift_rpm is None
+
+
 def test_mds_cylinders():
     engine = CHARGER.engine
     assert engine.deactivated_cylinders == (1, 4, 6, 7)

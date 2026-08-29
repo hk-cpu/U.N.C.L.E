@@ -138,6 +138,60 @@ def test_live_flags_a_lean_bank(service):
     service.stop_live()
 
 
+def test_gauges_start_only_the_cluster_channels(service):
+    service.connect(CHARGER)
+    started = service.start_gauges()
+
+    # The build guide's gauge v1 list: rpm, speed, coolant, oil, volts, intake.
+    assert started["channels"][:2] == ["RPM", "SPEED"]
+    assert "COOLANT_TEMP" in started["channels"]
+    # Nothing a dial does not show - a cluster polls fewer channels, faster.
+    assert "LONG_FUEL_TRIM_2" not in started["channels"]
+    service.stop_live()
+
+
+def test_gauges_sample_faster_than_the_live_view(service):
+    from cardiag.web.service import GAUGE_INTERVAL, SAMPLE_INTERVAL
+
+    service.connect(CHARGER)
+    service.start_gauges()
+    assert service._interval == GAUGE_INTERVAL
+    assert GAUGE_INTERVAL < SAMPLE_INTERVAL
+    service.stop_live()
+
+
+def test_gauges_carry_the_engine_limits_the_dial_needs(service):
+    service.connect(CHARGER)
+    engine = service.start_gauges()["engine"]
+
+    assert engine["redline_rpm"] == 5800
+    assert engine["shift_rpm"] < engine["redline_rpm"]
+    # The dial paints the coolant readout from these.
+    assert engine["coolant_warning"] == 110.0
+    assert engine["coolant_critical"] == 118.0
+    service.stop_live()
+
+
+def test_gauge_limits_are_empty_without_a_profile(service):
+    service.connect(CHARGER, vehicle="none")
+    engine = service.start_gauges()["engine"]
+
+    # No profile means no invented redline - the dial falls back on its own.
+    assert engine["redline_rpm"] is None
+    service.stop_live()
+
+
+def test_gauges_skip_channels_the_car_does_not_answer(service):
+    """A car without an oil temperature sensor still gets a cluster."""
+    service.connect("sim://?profile=default")
+    started = service.start_gauges()
+
+    assert "RPM" in started["channels"]
+    supported = {entry["name"] for entry in service.available_channels()}
+    assert set(started["channels"]) <= supported
+    service.stop_live()
+
+
 def test_live_rejects_channels_the_car_does_not_have(service):
     service.connect(CHARGER)
     with pytest.raises(ServiceError, match="none of the requested channels"):
@@ -259,6 +313,51 @@ def test_live_endpoints_over_http(http):
     assert snapshot["samples"] >= 1
 
     assert http("/api/live/stop", {})[0] == 200
+
+
+def test_gauges_endpoint_over_http(http):
+    http("/api/connect", {"url": CHARGER})
+    status, payload = http("/api/gauges/start", {})
+
+    assert status == 200
+    assert payload["channels"][0] == "RPM"
+    assert payload["engine"]["redline_rpm"] == 5800
+    http("/api/live/stop", {})
+
+
+def test_gauges_endpoint_needs_a_car(http):
+    status, payload = http("/api/gauges/start", {})
+    assert status == 400
+    assert "not connected" in payload["error"]
+
+
+def test_a_browser_that_hangs_up_does_not_raise():
+    """Closing the window mid-poll must not print a traceback at the user."""
+    from cardiag.web.server import Handler
+
+    handler = Handler.__new__(Handler)
+    handler.close_connection = False
+
+    def explode(*args, **kwargs):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    handler._send_now = explode
+    handler._send(200, b"{}", "application/json")     # must not raise
+    assert handler.close_connection is True
+
+
+def test_other_write_failures_still_surface():
+    from cardiag.web.server import Handler
+
+    handler = Handler.__new__(Handler)
+    handler.close_connection = False
+
+    def explode(*args, **kwargs):
+        raise OSError("the disk is on fire")
+
+    handler._send_now = explode
+    with pytest.raises(OSError):
+        handler._send(200, b"{}", "application/json")
 
 
 def test_ports_endpoint_always_answers(http):

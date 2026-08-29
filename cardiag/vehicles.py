@@ -32,6 +32,11 @@ class EngineLayout:
     deactivated_cylinders: tuple[int, ...] = ()
     plugs_per_cylinder: int = 1
     coils_per_cylinder: int = 1
+    #: Where the tachometer's red zone starts, for a gauge display. Approximate
+    #: - it is the published limiter, not a measured cutoff.
+    redline_rpm: int | None = None
+    #: A sensible upshift point for a shift light, below the limiter.
+    shift_rpm: int | None = None
 
     @property
     def total_plugs(self) -> int:
@@ -156,6 +161,8 @@ class VehicleProfile:
                 "plugs_per_cylinder": self.engine.plugs_per_cylinder,
                 "total_plugs": self.engine.total_plugs,
                 "bank_side": dict(self.engine.bank_side),
+                "redline_rpm": self.engine.redline_rpm,
+                "shift_rpm": self.engine.shift_rpm,
             },
             "transmission": self.transmission,
             "expected_protocol": self.expected_protocol,
@@ -194,6 +201,10 @@ HEMI_57 = EngineLayout(
     # The HEMI combustion chamber uses two plugs per cylinder - 16 in total.
     plugs_per_cylinder=2,
     coils_per_cylinder=1,
+    # The 5.7 cuts fuel around 5800 rpm; there is nothing above it worth
+    # chasing, so the red zone starts there and the shift light comes earlier.
+    redline_rpm=5800,
+    shift_rpm=5400,
 )
 
 CHARGER_RT_2006 = VehicleProfile(

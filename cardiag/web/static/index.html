@@ -40,6 +40,7 @@
 <nav class="tabs" id="tabs" role="tablist">
   <button class="tab is-active" role="tab" data-view="connect" aria-selected="true">Connect</button>
   <button class="tab" role="tab" data-view="scan" data-needs-car aria-selected="false">Health</button>
+  <button class="tab" role="tab" data-view="gauges" data-needs-car aria-selected="false">Gauges</button>
   <button class="tab" role="tab" data-view="live" data-needs-car aria-selected="false">Live</button>
   <button class="tab" role="tab" data-view="codes" data-needs-car aria-selected="false">Codes</button>
   <button class="tab" role="tab" data-view="tests" data-needs-car aria-selected="false">Monitors</button>
@@ -112,6 +113,56 @@
       <span class="muted" id="scan-meta"></span>
     </div>
     <div id="scan-body"><p class="muted">Run a health check to see what the ECU knows.</p></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-gauges" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="gauge-toggle" type="button">Start</button>
+      <button class="btn btn-quiet" id="gauge-fullscreen" type="button">Full screen</button>
+      <span class="muted" id="gauge-meta"></span>
+    </div>
+
+    <div class="cluster" id="cluster" hidden>
+      <div class="shift-light" id="shift-light" aria-hidden="true"></div>
+
+      <div class="dials">
+        <figure class="dial">
+          <svg viewBox="0 0 200 186" class="dial-face" id="dial-rpm" role="img"
+               aria-label="Engine speed"></svg>
+          <figcaption class="dial-caption">
+            <span class="dial-value" id="rpm-value">—</span>
+            <span class="dial-unit">rpm</span>
+          </figcaption>
+        </figure>
+
+        <figure class="dial">
+          <svg viewBox="0 0 200 186" class="dial-face" id="dial-speed" role="img"
+               aria-label="Vehicle speed"></svg>
+          <figcaption class="dial-caption">
+            <span class="dial-value" id="speed-value">—</span>
+            <span class="dial-unit">km/h</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="readouts" id="readouts"></div>
+
+      <div class="sprint" id="sprint">
+        <div class="sprint-label">0&ndash;100 km/h</div>
+        <div class="sprint-value" id="sprint-value">&mdash;</div>
+        <div class="sprint-note" id="sprint-note">
+          Arms at a standstill. Indicative &mdash; an OBD adapter samples far
+          slower than a drag box.
+        </div>
+      </div>
+    </div>
+
+    <p class="muted" id="gauge-hint">
+      A full-screen instrument cluster driven by the car's own data. Start it,
+      go full screen, and prop the phone or tablet where you can see it — the
+      screen is kept awake while it runs.
+    </p>
   </section>
 
   <!-- ---------------------------------------------------------------- -->

@@ -33,6 +33,17 @@ DEFAULT_LIVE = [
     "LONG_FUEL_TRIM_1", "LONG_FUEL_TRIM_2",
 ]
 
+#: What the gauge cluster shows. Kept short on purpose: every extra channel is
+#: another request per pass, and a tachometer that lags is worse than no
+#: tachometer. The two dials come first so they refresh fastest.
+GAUGE_CHANNELS = [
+    "RPM", "SPEED",
+    "COOLANT_TEMP", "OIL_TEMP", "CONTROL_MODULE_VOLTAGE", "INTAKE_TEMP",
+]
+
+#: The gauge view polls as hard as the adapter allows.
+GAUGE_INTERVAL = 0.05
+
 
 class ServiceError(Exception):
     """Something the user needs to be told about, in plain words."""
@@ -53,6 +64,7 @@ class VehicleService:
         self._history: dict[str, deque] = {}
         self._sample_count = 0
         self._last_sample_at: float | None = None
+        self._interval = SAMPLE_INTERVAL
         #: Where baselines are stored; tests point this at a temporary file.
         self.baseline_path = None
 
@@ -220,6 +232,32 @@ class VehicleService:
             "deactivated_cylinders": deactivated,
         }
 
+    def start_gauges(self) -> dict:
+        """Live sampling tuned for the gauge cluster."""
+        with self._lock:
+            session = self._require()
+            supported = {entry.name for entry in session.live_pids()}
+            wanted = [name for name in GAUGE_CHANNELS if name in supported]
+
+        started = self.start_live(wanted or None, interval=GAUGE_INTERVAL)
+        started["engine"] = self.engine_limits()
+        return started
+
+    def engine_limits(self) -> dict:
+        """What the dials need to draw themselves for this particular engine."""
+        engine = self._profile.engine if self._profile else None
+        return {
+            "redline_rpm": engine.redline_rpm if engine else None,
+            "shift_rpm": engine.shift_rpm if engine else None,
+            "coolant_warning": self._thresholds().coolant_warning,
+            "coolant_critical": self._thresholds().coolant_critical,
+            "charging_low": self._thresholds().charging_low,
+            "charging_high": self._thresholds().charging_high,
+        }
+
+    def _thresholds(self):
+        return self._profile.thresholds if self._profile else vehicles.Thresholds()
+
     def calibration(self) -> dict:
         with self._lock:
             return self._require().calibration()
@@ -309,10 +347,13 @@ class VehicleService:
             ]
 
     # -- live sampling -----------------------------------------------------
-    def start_live(self, names: list[str] | None = None) -> dict:
+    def start_live(self, names: list[str] | None = None,
+                   interval: float | None = None) -> dict:
         with self._lock:
             session = self._require()
             supported = {entry.name for entry in session.live_pids()}
+
+            self._interval = SAMPLE_INTERVAL if interval is None else max(0.0, interval)
 
             if names:
                 chosen = [name for name in names if name in supported]
@@ -359,8 +400,8 @@ class VehicleService:
                 pass
 
             elapsed = time.monotonic() - started
-            if elapsed < SAMPLE_INTERVAL:
-                time.sleep(SAMPLE_INTERVAL - elapsed)
+            if elapsed < self._interval:
+                time.sleep(self._interval - elapsed)
 
     def _sample_once(self) -> None:
         with self._lock:
