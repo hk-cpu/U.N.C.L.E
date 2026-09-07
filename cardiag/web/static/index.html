@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>cardiag</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="cardiag">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">cardiag</span>
+  </div>
+
+  <div class="link-state" id="link-state">
+    <span class="dot dot-off" id="link-dot" aria-hidden="true"></span>
+    <span id="link-text">Not connected</span>
+  </div>
+
+  <div class="topbar-actions">
+    <button class="btn btn-quiet" id="install" type="button" hidden>Install</button>
+    <button class="btn btn-quiet" id="theme-toggle" type="button" aria-label="Switch theme">
+      <span aria-hidden="true">◐</span>
+    </button>
+    <button class="btn btn-quiet" id="disconnect" type="button" hidden>Disconnect</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs" role="tablist">
+  <button class="tab is-active" role="tab" data-view="connect" aria-selected="true">Connect</button>
+  <button class="tab" role="tab" data-view="assistant" data-needs-car aria-selected="false">Assistant</button>
+  <button class="tab" role="tab" data-view="scan" data-needs-car aria-selected="false">Health</button>
+  <button class="tab" role="tab" data-view="gauges" data-needs-car aria-selected="false">Gauges</button>
+  <button class="tab" role="tab" data-view="live" data-needs-car aria-selected="false">Live</button>
+  <button class="tab" role="tab" data-view="codes" data-needs-car aria-selected="false">Codes</button>
+  <button class="tab" role="tab" data-view="tests" data-needs-car aria-selected="false">Monitors</button>
+  <button class="tab" role="tab" data-view="baselines" data-needs-car aria-selected="false">Baselines</button>
+  <button class="tab" role="tab" data-view="vehicle" data-needs-car aria-selected="false">Vehicle</button>
+</nav>
+
+<main id="main">
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view is-active" id="view-connect" role="tabpanel">
+    <div class="stack">
+      <div class="card">
+        <h2>Connect to your car</h2>
+        <p class="muted">
+          Plug the adapter into the OBD port and turn the ignition on. The
+          adapter powers up from the port even when the car is asleep, so a
+          connected adapter is not the same as a responding ECU.
+        </p>
+
+        <div class="field">
+          <label for="port-select">Adapter</label>
+          <div class="row">
+            <select id="port-select"></select>
+            <button class="btn btn-quiet" id="refresh-ports" type="button">Refresh</button>
+          </div>
+          <p class="hint" id="port-hint"></p>
+        </div>
+
+        <div class="field" id="manual-field" hidden>
+          <label for="manual-url">Connection string</label>
+          <input type="text" id="manual-url" placeholder="/dev/ttyUSB0 or tcp://192.168.0.10:35000">
+          <p class="hint">A device path, or a tcp:// address for a WiFi adapter.</p>
+        </div>
+
+        <div class="field">
+          <label for="vehicle-select">Vehicle profile</label>
+          <select id="vehicle-select">
+            <option value="auto">Detect from VIN (recommended)</option>
+            <option value="none">Generic — no model-specific advice</option>
+          </select>
+          <p class="hint">
+            A profile adds model-specific diagnosis: which bank a cylinder is on,
+            and the faults your car is known for.
+          </p>
+        </div>
+
+        <div class="row row-end">
+          <button class="btn btn-primary" id="connect" type="button">Connect</button>
+        </div>
+
+        <div class="alert alert-critical" id="connect-error" hidden></div>
+      </div>
+
+      <div class="card card-quiet">
+        <h3>No adapter to hand?</h3>
+        <p class="muted">
+          Try the whole app against a simulated car. The Charger profiles present
+          a 5.7 HEMI V8 with both banks reporting.
+        </p>
+        <div class="chip-row" id="sim-chips"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-assistant" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="explain" type="button">Explain my car</button>
+      <button class="btn btn-quiet" id="watch-toggle" type="button">Watch live</button>
+      <span class="muted" id="assistant-meta"></span>
+    </div>
+
+    <div class="verdict" id="verdict" hidden>
+      <div class="verdict-head">
+        <span class="verdict-icon" id="verdict-icon" aria-hidden="true"></span>
+        <div>
+          <p class="verdict-summary" id="verdict-summary"></p>
+          <p class="verdict-link" id="verdict-link"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="conditions" id="conditions"></div>
+
+    <div class="card" id="actions-card" hidden>
+      <h3>What to do about it</h3>
+      <ol class="actions" id="actions"></ol>
+    </div>
+
+    <p class="muted" id="assistant-hint">
+      Ask for a read of the whole car in plain language &mdash; what it is doing,
+      whether that is normal, and what is worth acting on. <em>Explain my car</em>
+      runs a full scan including the on-board monitors, so it can talk about wear
+      that has not set a code yet. <em>Watch live</em> keeps a running commentary
+      on what the engine is doing right now.
+    </p>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-scan" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="run-scan" type="button">Run health check</button>
+      <span class="muted" id="scan-meta"></span>
+    </div>
+    <div id="scan-body"><p class="muted">Run a health check to see what the ECU knows.</p></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-gauges" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="gauge-toggle" type="button">Start</button>
+      <button class="btn btn-quiet" id="gauge-fullscreen" type="button">Full screen</button>
+      <span class="muted" id="gauge-meta"></span>
+    </div>
+
+    <div class="cluster" id="cluster" hidden>
+      <div class="shift-light" id="shift-light" aria-hidden="true"></div>
+
+      <div class="dials">
+        <figure class="dial">
+          <svg viewBox="0 0 200 186" class="dial-face" id="dial-rpm" role="img"
+               aria-label="Engine speed"></svg>
+          <figcaption class="dial-caption">
+            <span class="dial-value" id="rpm-value">—</span>
+            <span class="dial-unit">rpm</span>
+          </figcaption>
+        </figure>
+
+        <figure class="dial">
+          <svg viewBox="0 0 200 186" class="dial-face" id="dial-speed" role="img"
+               aria-label="Vehicle speed"></svg>
+          <figcaption class="dial-caption">
+            <span class="dial-value" id="speed-value">—</span>
+            <span class="dial-unit">km/h</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="readouts" id="readouts"></div>
+
+      <div class="sprint" id="sprint">
+        <div class="sprint-label">0&ndash;100 km/h</div>
+        <div class="sprint-value" id="sprint-value">&mdash;</div>
+        <div class="sprint-note" id="sprint-note">
+          Arms at a standstill. Indicative &mdash; an OBD adapter samples far
+          slower than a drag box.
+        </div>
+      </div>
+    </div>
+
+    <p class="muted" id="gauge-hint">
+      A full-screen instrument cluster driven by the car's own data. Start it,
+      go full screen, and prop the phone or tablet where you can see it — the
+      screen is kept awake while it runs.
+    </p>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-live" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="live-toggle" type="button">Start</button>
+      <span class="muted" id="live-meta"></span>
+    </div>
+    <div class="tiles" id="live-tiles">
+      <p class="muted">Start the live view to watch engine data.</p>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-codes" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="read-codes" type="button">Read codes</button>
+      <button class="btn btn-danger" id="clear-codes" type="button" hidden>Clear codes</button>
+      <span class="muted" id="codes-meta"></span>
+    </div>
+    <div id="codes-body"><p class="muted">Read the stored trouble codes to begin.</p></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-tests" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="read-tests" type="button">Read monitors</button>
+      <span class="muted" id="tests-meta"></span>
+    </div>
+    <p class="muted">
+      Mode 06 is what the monitors actually measured, not just whether they
+      passed. Misfire counters move here long before a code is set, so this is
+      where a developing fault shows up first.
+    </p>
+    <div id="tests-body"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-baselines" role="tabpanel">
+    <div class="view-head">
+      <input type="text" id="baseline-label" placeholder="name this snapshot, e.g. before-plugs">
+      <button class="btn btn-primary" id="save-baseline" type="button">Save snapshot</button>
+    </div>
+    <p class="muted">
+      Record how the car is now, change one thing, then compare. That turns
+      "does it feel better?" into a measurement — and a changed calibration ID
+      tells you if the ECU was reflashed.
+    </p>
+    <div id="baselines-body"></div>
+    <div id="compare-body"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-vehicle" role="tabpanel">
+    <div id="vehicle-body"><p class="muted">Connect to load vehicle details.</p></div>
+  </section>
+
+</main>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title">Clear trouble codes?</h2>
+    <div class="alert alert-warning">
+      This erases the freeze frame and resets every readiness monitor. Your car
+      will not pass an emissions test until you have driven a full cycle, and if
+      the underlying fault is still there the code will come straight back.
+    </div>
+    <p class="muted">Codes that will be erased:</p>
+    <ul class="plain" id="modal-codes"></ul>
+    <div class="row row-end">
+      <button class="btn btn-quiet" id="modal-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="modal-confirm" type="button">Erase them</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
