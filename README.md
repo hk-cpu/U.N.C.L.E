@@ -45,10 +45,12 @@ rather than showing stale readings — vehicle data is never cached).
 The manifest also registers shortcuts, so a long-press or right-click on the
 icon jumps straight to Health, Live or Codes.
 
-Eight tabs:
+Nine tabs:
 
 - **Connect** — pick your adapter from a list, or click a simulated car to try
   it with no hardware.
+- **Assistant** — the car explained in plain language: what it is doing, whether
+  that is normal, and what is worth acting on.
 - **Health** — the full diagnosis: findings ranked worst-first, each with what
   to check, plus readiness monitors, live data and the freeze frame.
 - **Gauges** — a full-screen instrument cluster: tachometer, speedometer, a
@@ -89,6 +91,50 @@ icon.
 
 Nothing is sent anywhere. The server runs on your machine and talks to your
 adapter; it binds to localhost unless you ask otherwise.
+
+### The assistant
+
+Connecting lands on the **Assistant**, which reads the whole car and says what
+it found in sentences rather than numbers:
+
+> Dodge Charger R/T (5.7 L HEMI V8) is running, but something needs looking at.
+>
+> **Fuelling — bank 2 lean.** Bank 2 (passenger's (right) side) is +23% off. The
+> ECU is having to correct hard, which points at an air leak, a weak fuel supply
+> or a lying oxygen sensor.
+
+One card per aspect of the car — faults, engine, cooling, fuelling, electrical,
+wear, readiness — each with the numbers it drew its conclusion from, so any claim
+can be checked. *Watch live* keeps a running commentary going while you drive or
+rev it, carrying the scan's findings forward rather than silently retracting them.
+
+It works with no internet and no API key. That is deliberate: the moment you are
+stood over an engine in a car park is the moment your phone has no signal, and an
+explanation that needs the network is no explanation at all. The reasoning is
+ordinary tested Python in `cardiag/explain.py`, not a model's guess.
+
+Two rules it follows, both of which it has tests for:
+
+- **It never describes a channel the car did not answer.** No coolant reading
+  produces no cooling verdict — not a reassuring one.
+- **It never calls a car healthy while listing repairs.** The summary weighs the
+  mode 06 monitors as well as the live readings, so the flagship case — a car
+  with no codes, no warning light, and a cylinder quietly misfiring — reads
+  *"no stored codes, but the monitors show something developing"*.
+
+#### How it is connected
+
+The header and the assistant both name the link: **USB**, **Bluetooth**, **WiFi**
+or **Simulated**. This is worth stating because a Bluetooth ELM327 reaches the
+computer as an ordinary serial port — on Windows both a cable and a pairing are
+just a COM port — so the app checks the driver's own description rather than
+guessing from the device path.
+
+| Link | What you connect to |
+|---|---|
+| USB | `/dev/ttyUSB0`, `/dev/ttyACM0`, `COM3` — the Vgate cable |
+| Bluetooth | `/dev/rfcomm0` after pairing, or the COM port Windows assigns |
+| WiFi | `tcp://192.168.0.10:35000` |
 
 ### The gauge cluster
 

@@ -39,6 +39,7 @@
 
 <nav class="tabs" id="tabs" role="tablist">
   <button class="tab is-active" role="tab" data-view="connect" aria-selected="true">Connect</button>
+  <button class="tab" role="tab" data-view="assistant" data-needs-car aria-selected="false">Assistant</button>
   <button class="tab" role="tab" data-view="scan" data-needs-car aria-selected="false">Health</button>
   <button class="tab" role="tab" data-view="gauges" data-needs-car aria-selected="false">Gauges</button>
   <button class="tab" role="tab" data-view="live" data-needs-car aria-selected="false">Live</button>
@@ -104,6 +105,40 @@
         <div class="chip-row" id="sim-chips"></div>
       </div>
     </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-assistant" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="explain" type="button">Explain my car</button>
+      <button class="btn btn-quiet" id="watch-toggle" type="button">Watch live</button>
+      <span class="muted" id="assistant-meta"></span>
+    </div>
+
+    <div class="verdict" id="verdict" hidden>
+      <div class="verdict-head">
+        <span class="verdict-icon" id="verdict-icon" aria-hidden="true"></span>
+        <div>
+          <p class="verdict-summary" id="verdict-summary"></p>
+          <p class="verdict-link" id="verdict-link"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="conditions" id="conditions"></div>
+
+    <div class="card" id="actions-card" hidden>
+      <h3>What to do about it</h3>
+      <ol class="actions" id="actions"></ol>
+    </div>
+
+    <p class="muted" id="assistant-hint">
+      Ask for a read of the whole car in plain language &mdash; what it is doing,
+      whether that is normal, and what is worth acting on. <em>Explain my car</em>
+      runs a full scan including the on-board monitors, so it can talk about wear
+      that has not set a code yet. <em>Watch live</em> keeps a running commentary
+      on what the engine is doing right now.
+    </p>
   </section>
 
   <!-- ---------------------------------------------------------------- -->

@@ -138,6 +138,77 @@ def test_live_flags_a_lean_bank(service):
     service.stop_live()
 
 
+def test_the_assistant_explains_a_scan(service):
+    service.connect(CHARGER)
+    payload = service.explain()
+
+    assert payload["summary"]
+    assert payload["severity"] == "serious"
+    topics = {item["topic"] for item in payload["conditions"]}
+    assert {"Faults", "Engine", "Fuelling"} <= topics
+    assert payload["actions"]
+
+
+def test_the_assistant_reports_how_the_car_is_connected(service):
+    service.connect(CHARGER)
+    link = service.explain()["link"]
+
+    assert link["kind"] == "simulated"
+    assert link["label"] == "Simulated"
+    assert "simulated" in link["detail"]
+
+
+def test_a_wifi_adapter_is_reported_as_wifi(service):
+    # No adapter answers, but the classification must not depend on connecting.
+    from cardiag.transport import link_kind
+    assert link_kind("tcp://192.168.0.10:35000") == "wifi"
+
+
+def test_the_live_commentary_needs_no_scan(service):
+    service.connect(CHARGER)
+    service.start_live()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if service.live_snapshot()["samples"] >= 2:
+            break
+        time.sleep(0.1)
+
+    payload = service.explain_live()
+    assert payload["sampling"] is True
+    assert payload["conditions"], "the sampler had readings to explain"
+    service.stop_live()
+
+
+def test_the_live_commentary_says_nothing_before_any_samples(service):
+    service.connect(CHARGER)
+    payload = service.explain_live()
+
+    # No sampler has run, so there is nothing to describe - and describing
+    # nothing must not come out sounding like a clean bill of health.
+    assert payload["conditions"] == []
+    assert "not enough" in payload["summary"].lower()
+
+
+def test_the_assistant_refuses_without_a_car(service):
+    with pytest.raises(ServiceError, match="not connected"):
+        service.explain()
+    with pytest.raises(ServiceError, match="not connected"):
+        service.explain_live()
+
+
+def test_live_tile_colours_follow_the_vehicle_profile(service):
+    """A tile and the assistant must not disagree about the same number."""
+    from cardiag.web.service import _channel_severity
+    from cardiag import vehicles
+
+    charger = vehicles.CHARGER_RT_2006.thresholds
+    # 112 degC is past this engine's 110 warning line but short of critical.
+    assert _channel_severity("COOLANT_TEMP", 112.0, charger) == "warning"
+    assert _channel_severity("COOLANT_TEMP", 119.0, charger) == "critical"
+    assert _channel_severity("COOLANT_TEMP", 100.0, charger) == "good"
+
+
 def test_gauges_start_only_the_cluster_channels(service):
     service.connect(CHARGER)
     started = service.start_gauges()
@@ -313,6 +384,32 @@ def test_live_endpoints_over_http(http):
     assert snapshot["samples"] >= 1
 
     assert http("/api/live/stop", {})[0] == 200
+
+
+def test_assistant_endpoints_over_http(http):
+    http("/api/connect", {"url": CHARGER})
+
+    status, payload = http("/api/assistant")
+    assert status == 200
+    assert payload["conditions"]
+    assert payload["link"]["kind"] == "simulated"
+
+    status, live = http("/api/assistant/live")
+    assert status == 200
+    assert "summary" in live
+
+
+def test_assistant_endpoint_needs_a_car(http):
+    status, payload = http("/api/assistant")
+    assert status == 400
+    assert "not connected" in payload["error"]
+
+
+def test_status_names_the_link_type(http):
+    http("/api/connect", {"url": CHARGER})
+    status, payload = http("/api/status")
+    assert payload["link_kind"] == "simulated"
+    assert payload["link_label"] == "Simulated"
 
 
 def test_gauges_endpoint_over_http(http):

@@ -173,6 +173,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.service.monitor_tests())
             elif path == "/api/calibration":
                 self._json({"calibration": self.service.calibration()})
+            elif path == "/api/assistant":
+                self._json(self.service.explain())
+            elif path == "/api/assistant/live":
+                self._json(self.service.explain_live())
             elif path == "/api/procedures":
                 self._json(self.service.procedures())
             elif path == "/api/baselines":

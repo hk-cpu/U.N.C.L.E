@@ -13,11 +13,11 @@ import time
 from collections import deque
 from typing import Any
 
-from .. import baseline as baseline_module, mode06, pids
+from .. import baseline as baseline_module, explain as explain_module, mode06, pids
 from .. import report as report_module, vehicles, vin as vin_module
 from ..elm327 import ObdError
 from ..session import Reading, Session
-from ..transport import TransportError, describe_url
+from ..transport import TransportError, describe_url, link_kind, link_label
 
 #: How many samples of each channel to keep for the sparklines.
 HISTORY = 60
@@ -54,6 +54,9 @@ class VehicleService:
         self._lock = threading.RLock()
         self._session: Session | None = None
         self._url: str | None = None
+        #: The driver's own name for the port, which is how a Bluetooth link is
+        #: told apart from a cable - both arrive as a serial device.
+        self._port_description: str = ""
         self._profile: vehicles.VehicleProfile | None = None
         self._error: str | None = None
 
@@ -92,6 +95,7 @@ class VehicleService:
 
             self._session = session
             self._url = url
+            self._port_description = _describe_port(url)
             self._error = None
 
             if profile is None and (vehicle or "").lower() != "none":
@@ -109,6 +113,7 @@ class VehicleService:
                 self._session.close()
             self._session = None
             self._url = None
+            self._port_description = ""
             self._profile = None
         return self.status()
 
@@ -136,6 +141,10 @@ class VehicleService:
                 "connected": True,
                 "url": self._url,
                 "link": describe_url(self._url or ""),
+                # How the adapter is attached, so the interface can say whether
+                # it is speaking over a cable, a pairing or the network.
+                "link_kind": link_kind(self._url or "", self._port_description),
+                "link_label": link_label(self._url or "", self._port_description),
                 "adapter": adapter.identifier if adapter else None,
                 "protocol": adapter.protocol if adapter else None,
                 "battery_voltage": adapter.voltage if adapter else None,
@@ -146,6 +155,49 @@ class VehicleService:
                 "error": None,
                 "profiles": sorted(vehicles.PROFILES),
             }
+
+    # -- the assistant -----------------------------------------------------
+    def explain(self) -> dict:
+        """A full scan, said in plain language.
+
+        This is the slow, thorough one: it reads codes, monitors and mode 06,
+        so it can talk about wear that has not set a code yet.
+        """
+        with self._lock:
+            session = self._require()
+            result = report_module.build(session, profile=self._profile)
+
+        payload = explain_module.from_report(result).to_dict()
+        payload["scanned_at"] = result.generated_at
+        payload["link"] = self._link_summary()
+        return payload
+
+    def explain_live(self) -> dict:
+        """What the car is doing right now, from the sampler's last readings.
+
+        Cheap enough to call while the live view is running - it reads nothing
+        from the adapter, only what the sampler already collected.
+        """
+        with self._lock:
+            self._require()
+            readings = {
+                name: {"value": entry["value"]}
+                for name, entry in self._latest.items()
+            }
+            profile = self._profile
+
+        payload = explain_module.from_live(readings, profile).to_dict()
+        payload["sampling"] = self._sampling.is_set()
+        payload["link"] = self._link_summary()
+        return payload
+
+    def _link_summary(self) -> dict:
+        url = self._url or ""
+        return {
+            "kind": link_kind(url, self._port_description),
+            "label": link_label(url, self._port_description),
+            "detail": describe_url(url),
+        }
 
     # -- one-shot operations ----------------------------------------------
     def scan(self) -> dict:
@@ -448,7 +500,9 @@ class VehicleService:
                     "max": max(history) if history else None,
                     "range_low": low,
                     "range_high": high,
-                    "severity": _channel_severity(name, latest["value"] if latest else None),
+                    "severity": _channel_severity(
+                        name, latest["value"] if latest else None,
+                        self._profile.thresholds if self._profile else None),
                 })
             return {
                 "sampling": self._sampling.is_set(),
@@ -486,22 +540,52 @@ def _display_range(name: str, entry) -> tuple[float | None, float | None]:
     return entry.minimum, entry.maximum
 
 
+def _describe_port(url: str) -> str:
+    """The driver's description of a serial port, if it is one we can see.
+
+    Only the description tells a paired Bluetooth adapter from a cabled one on
+    Windows, where both are a COM port.
+    """
+    if not url or "://" in url and not url.startswith("serial://"):
+        return ""
+    try:
+        from ..transport.serial_link import list_ports
+
+        target = url.replace("serial://", "")
+        for device, description in list_ports():
+            if device == target:
+                return description
+    except Exception:                                  # pyserial missing, etc.
+        pass
+    return ""
+
+
 #: Live values worth colouring when they leave their normal band. Everything
-#: else stays neutral - a meter that is always amber teaches nothing.
+#: else stays neutral - a meter that is always amber teaches nothing. The
+#: temperature and charging lines come from the vehicle profile rather than
+#: being repeated here, so a tile and the assistant cannot disagree about the
+#: same number.
 _WARN_RULES = {
-    "COOLANT_TEMP": lambda v: "critical" if v > 113 else ("warning" if v > 105 else "good"),
-    "RPM": lambda v: "warning" if v > 5500 else "good",
-    "CONTROL_MODULE_VOLTAGE": lambda v: "warning" if v < 13.0 or v > 15.0 else "good",
-    "LONG_FUEL_TRIM_1": lambda v: "warning" if abs(v) > 15 else "good",
-    "LONG_FUEL_TRIM_2": lambda v: "warning" if abs(v) > 15 else "good",
-    "OIL_TEMP": lambda v: "warning" if v > 130 else "good",
+    "RPM": lambda v, t: "warning" if v > 5500 else "good",
+    "LONG_FUEL_TRIM_1": lambda v, t: "warning" if abs(v) > 15 else "good",
+    "LONG_FUEL_TRIM_2": lambda v, t: "warning" if abs(v) > 15 else "good",
+    "OIL_TEMP": lambda v, t: "warning" if v > 130 else "good",
+    "COOLANT_TEMP": lambda v, t: (
+        "critical" if v >= t.coolant_critical
+        else "warning" if v >= t.coolant_warning
+        else "good"
+    ),
+    "CONTROL_MODULE_VOLTAGE": lambda v, t: (
+        "warning" if v < t.charging_low or v > t.charging_high else "good"
+    ),
 }
 
 
-def _channel_severity(name: str, value: float | None) -> str:
+def _channel_severity(name: str, value: float | None,
+                      thresholds: vehicles.Thresholds | None = None) -> str:
     if value is None:
         return "neutral"
     rule = _WARN_RULES.get(name)
     if rule is None:
         return "neutral"
-    return rule(value)
+    return rule(value, thresholds or vehicles.Thresholds())

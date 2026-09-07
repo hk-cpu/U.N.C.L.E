@@ -131,7 +131,9 @@
       tab.setAttribute("aria-selected", String(active));
     });
     // Sampling only makes sense while its view is on screen.
-    if (name !== "live" && state.sampling && !gauges.running) stopLive();
+    if (name !== "assistant" && assistant.watching) stopWatching();
+    if (name !== "live" && state.sampling && !gauges.running
+        && !assistant.watching) stopLive();
     if (name !== "gauges" && gauges.running) stopGauges();
     if (name === "vehicle") loadVehicle();
     if (name === "baselines") loadBaselines();
@@ -229,8 +231,10 @@
       await post("/api/connect", { url, vehicle: $("vehicle-select").value });
       await refreshStatus();
       toast("Connected");
-      showView("scan");
-      runScan();
+      // Land on the plain-language read of the car rather than the raw scan.
+      // Both run the same underlying report; this one leads with what it means.
+      showView("assistant");
+      explainCar();
     } catch (exc) {
       error.textContent = exc.message;
       error.hidden = false;
@@ -882,6 +886,150 @@
     });
   }
 
+  /* ------------------------------------------------------------ assistant */
+
+  // "good" means actively fine; "info" means there is nothing to judge yet - a
+  // cold engine's trims, for instance. A green tick on the second would claim
+  // more than the data supports, so info gets a neutral ring of its own.
+  const CONDITION_ICON = { ...SEVERITY_ICON, good: "✓", info: "○" };
+
+  // How the adapter is attached. Said in words as well as drawn, because the
+  // symbol alone does not distinguish a cable from a pairing.
+  const LINK_ICON = {
+    usb: "⭘", bluetooth: "✳", wifi: "◈", serial: "⭘", simulated: "◌",
+  };
+
+  const SEVERITY_RANK = ["critical", "serious", "moderate", "advisory",
+                         "info", "good"];
+  const worseOf = (a, b) =>
+    SEVERITY_RANK.indexOf(a) <= SEVERITY_RANK.indexOf(b) ? a : b;
+
+  const assistant = { watching: false, timer: null, scan: null };
+
+  async function explainCar() {
+    const button = $("explain");
+    busy(button, true, "Scanning");
+    try {
+      const payload = await get("/api/assistant");
+      assistant.scan = payload;
+      renderVerdict(payload);
+      $("assistant-meta").textContent = "full scan";
+    } catch (exc) {
+      toast(exc.message);
+    } finally {
+      busy(button, false);
+    }
+  }
+
+  /* A live pass only sees what the sampler is reading. Stored codes, mode 06
+     wear and readiness came from the scan and are still true a second later,
+     so they are carried forward rather than dropped - otherwise starting the
+     commentary would silently retract a misfire warning. */
+  function mergeVerdict(live) {
+    const scan = assistant.scan;
+    if (!scan) return live;
+
+    const fresh = new Set((live.conditions || []).map((c) => c.topic));
+    const carried = (scan.conditions || []).filter((c) => !fresh.has(c.topic));
+    const conditions = [...(live.conditions || []), ...carried];
+
+    const severity = conditions.reduce(
+      (worst, c) => worseOf(worst, c.severity), "good");
+    // The scan's summary is the better sentence - it names the car and weighs
+    // codes and wear as well as live readings. The live one only takes over
+    // when the engine has done something worse since the scan ran.
+    const summary = SEVERITY_RANK.indexOf(live.severity)
+      < SEVERITY_RANK.indexOf(scan.severity) ? live.summary : scan.summary;
+
+    return { ...live, conditions, severity, summary, actions: scan.actions };
+  }
+  $("explain").addEventListener("click", explainCar);
+
+  function renderVerdict(payload) {
+    const verdict = $("verdict");
+    verdict.hidden = false;
+    verdict.className = `verdict sev-${payload.severity}`;
+    $("verdict-icon").textContent = CONDITION_ICON[payload.severity] || "●";
+    $("verdict-summary").textContent = payload.summary;
+
+    const link = payload.link || {};
+    $("verdict-link").textContent = link.label
+      ? `${LINK_ICON[link.kind] || "⭘"}  Connected over ${link.label} — ${link.detail}`
+      : "";
+
+    const host = clear($("conditions"));
+    (payload.conditions || []).forEach((condition) => {
+      const card = el("div", `condition sev-${condition.severity}`);
+
+      const head = el("div", "condition-head");
+      head.appendChild(el("span", "condition-icon",
+        CONDITION_ICON[condition.severity] || "●"));
+      head.appendChild(el("span", "condition-topic", condition.topic));
+      head.appendChild(el("span", "condition-state", condition.state));
+      card.appendChild(head);
+
+      card.appendChild(el("p", "condition-detail", condition.detail));
+
+      if (condition.evidence?.length) {
+        const evidence = el("div", "evidence");
+        condition.evidence.slice(0, 8).forEach((item) =>
+          evidence.appendChild(el("span", "evidence-item", item)));
+        card.appendChild(evidence);
+      }
+      host.appendChild(card);
+    });
+
+    const actions = payload.actions || [];
+    $("actions-card").hidden = actions.length === 0;
+    const list = clear($("actions"));
+    actions.forEach((action) => list.appendChild(el("li", null, action)));
+
+    $("assistant-hint").hidden = true;
+  }
+
+  async function startWatching() {
+    // The commentary needs the sampler running to have anything to read.
+    if (!state.sampling) {
+      try {
+        await post("/api/live/start", {});
+        state.sampling = true;
+      } catch (exc) {
+        toast(exc.message);
+        return;
+      }
+    }
+    assistant.watching = true;
+    $("watch-toggle").textContent = "Stop watching";
+    pollCommentary();
+    assistant.timer = setInterval(pollCommentary, 2000);
+  }
+
+  async function stopWatching() {
+    clearInterval(assistant.timer);
+    assistant.timer = null;
+    if (!assistant.watching) return;
+
+    assistant.watching = false;
+    $("watch-toggle").textContent = "Watch live";
+    state.sampling = false;
+    try { await post("/api/live/stop"); } catch { /* already stopped */ }
+  }
+
+  $("watch-toggle").addEventListener("click", () => {
+    assistant.watching ? stopWatching() : startWatching();
+  });
+
+  async function pollCommentary() {
+    try {
+      const payload = await get("/api/assistant/live");
+      renderVerdict(mergeVerdict(payload));
+      $("assistant-meta").textContent = assistant.scan
+        ? "watching live · scan carried forward" : "watching live";
+    } catch {
+      /* a dropped poll is not worth a banner */
+    }
+  }
+
   /* -------------------------------------------------------- mode 06 tests */
 
   async function readTests() {
@@ -1216,8 +1364,8 @@
     if (state.sampling) navigator.sendBeacon?.("/api/live/stop");
   });
 
-  const VIEWS = ["connect", "scan", "gauges", "live", "codes", "tests",
-                 "baselines", "vehicle"];
+  const VIEWS = ["connect", "assistant", "scan", "gauges", "live", "codes",
+                 "tests", "baselines", "vehicle"];
 
   (async () => {
     await loadPorts();
@@ -1226,6 +1374,6 @@
 
     // App shortcuts arrive as ?view=live and friends.
     const wanted = new URLSearchParams(location.search).get("view");
-    showView(VIEWS.includes(wanted) ? wanted : "scan");
+    showView(VIEWS.includes(wanted) ? wanted : "assistant");
   })();
 })();

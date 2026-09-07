@@ -437,6 +437,97 @@ table.data th:last-child { text-align: right; }
 .finding.change-worse  { border-left: 3px solid var(--critical); }
 .finding.change-better { border-left: 3px solid var(--good); }
 
+/* -- assistant ----------------------------------------------------------
+   The verdict is the one place in the app where a sentence outranks a number,
+   so it gets the size. Severity tints the card's edge and wash, never the
+   body text - a paragraph in warning amber is harder to read, not more urgent.
+   Every severity also carries its icon, so the colour is never the only cue. */
+
+.verdict {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+}
+.verdict-head { display: flex; gap: .8rem; align-items: flex-start; }
+.verdict-icon { font-size: 1.5rem; line-height: 1.2; color: var(--muted); }
+.verdict-summary {
+  margin: 0; font-size: 1.25rem; font-weight: 600; line-height: 1.35;
+  color: var(--ink);
+}
+.verdict-link {
+  margin: .35rem 0 0; font-size: .85rem; color: var(--muted);
+}
+
+.verdict.sev-good,     .verdict.sev-info     { border-left-color: var(--good); }
+.verdict.sev-advisory  { border-left-color: var(--advisory); }
+.verdict.sev-moderate  { border-left-color: var(--warning); }
+.verdict.sev-serious   { border-left-color: var(--serious); }
+.verdict.sev-critical  { border-left-color: var(--critical); }
+
+.verdict.sev-good .verdict-icon,
+.verdict.sev-info .verdict-icon     { color: var(--good); }
+.verdict.sev-advisory .verdict-icon { color: var(--advisory); }
+.verdict.sev-moderate .verdict-icon { color: var(--warning); }
+.verdict.sev-serious .verdict-icon  { color: var(--serious); }
+.verdict.sev-critical .verdict-icon { color: var(--critical); }
+.verdict.sev-critical { background: var(--critical-wash); }
+.verdict.sev-serious  { background: var(--serious-wash); }
+
+.conditions {
+  display: grid; gap: .7rem; margin-bottom: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.condition {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--muted);
+  border-radius: var(--radius);
+  padding: .8rem .9rem;
+}
+.condition-head {
+  display: flex; align-items: baseline; gap: .45rem; margin-bottom: .35rem;
+}
+.condition-icon { color: var(--muted); }
+.condition-topic {
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); font-weight: 600;
+}
+.condition-state { font-weight: 620; margin-left: auto; }
+.condition-detail {
+  margin: 0; color: var(--ink-2); line-height: 1.5; font-size: .92rem;
+}
+
+.condition.sev-good { border-top-color: var(--good); }
+/* Nothing to judge yet reads as neutral, not as a pass. */
+.condition.sev-info { border-top-color: var(--rule); }
+.condition.sev-info .condition-state { color: var(--ink-2); }
+.condition.sev-advisory { border-top-color: var(--advisory); }
+.condition.sev-moderate { border-top-color: var(--warning); }
+.condition.sev-serious  { border-top-color: var(--serious); }
+.condition.sev-critical { border-top-color: var(--critical); }
+
+.condition.sev-good .condition-icon     { color: var(--good); }
+.condition.sev-info .condition-icon     { color: var(--muted); }
+.condition.sev-advisory .condition-icon { color: var(--advisory); }
+.condition.sev-moderate .condition-icon { color: var(--warning); }
+.condition.sev-serious .condition-icon  { color: var(--serious); }
+.condition.sev-critical .condition-icon { color: var(--critical); }
+
+/* The numbers the sentence was drawn from, so a claim can be checked. */
+.evidence { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .6rem; }
+.evidence-item {
+  font-family: var(--mono); font-size: .74rem;
+  background: var(--surface-sunk); color: var(--ink-2);
+  border-radius: 5px; padding: .15rem .4rem;
+}
+
+.actions { margin: 0; padding-left: 1.2rem; }
+.actions li { margin-bottom: .5rem; line-height: 1.5; color: var(--ink-2); }
+.actions li:last-child { margin-bottom: 0; }
+
 /* -- gauge cluster -------------------------------------------------------
    A car dashboard is the one place a radial dial beats a bar: the sweep angle
    is what a driver reads without focusing, and the red zone's position is
