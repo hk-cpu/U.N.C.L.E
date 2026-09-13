@@ -35,6 +35,59 @@ class Reading:
         return f"{self.pid.description}: {self.pid.format(self.value)}"
 
 
+#: What the car is doing, as far as the OBD port can tell.
+CAR_RUNNING = "running"        #: engine turning
+CAR_IGNITION = "ignition"      #: key on, engine off - the ECU answers
+CAR_ASLEEP = "asleep"          #: modules asleep; the adapter still answers
+CAR_UNREACHABLE = "unreachable"  #: the adapter itself has gone
+
+#: Above this, something is charging the battery, so the engine is turning.
+CHARGING_VOLTAGE = 13.0
+
+
+@dataclass
+class CarState:
+    """Ignition state, for anything that should follow the key.
+
+    The distinction that matters is between a car that is *off* and an adapter
+    that is *gone*: the ELM327 is powered from DLC pin 16, which is live with
+    the key out, so a sleeping car still reports its voltage while the ECU
+    answers nothing. A dashboard can sleep on the first and must complain about
+    the second.
+    """
+
+    state: str
+    rpm: float | None = None
+    voltage: float | None = None
+
+    @property
+    def awake(self) -> bool:
+        """True when the ECU is answering, whether or not the engine turns."""
+        return self.state in (CAR_RUNNING, CAR_IGNITION)
+
+    @property
+    def detail(self) -> str:
+        if self.state == CAR_RUNNING:
+            return f"Engine running at {self.rpm:,.0f} rpm." if self.rpm \
+                else "Engine running."
+        if self.state == CAR_IGNITION:
+            return "Ignition on, engine not running."
+        if self.state == CAR_ASLEEP:
+            return ("The car is off. The adapter is still powered - the OBD "
+                    "port is live with the key out - but no module is "
+                    "answering.")
+        return "The adapter is not responding. Check that it is seated."
+
+    def to_dict(self) -> dict:
+        return {
+            "state": self.state,
+            "awake": self.awake,
+            "detail": self.detail,
+            "rpm": self.rpm,
+            "voltage": self.voltage,
+        }
+
+
 @dataclass
 class VehicleInfo:
     vin: str | None
@@ -335,6 +388,41 @@ class Session:
             adapter=self.adapter.identifier if self.adapter else "unknown",
             battery_voltage=self.adapter.voltage if self.adapter else None,
         )
+
+    def car_state(self) -> CarState:
+        """Ask the car whether it is awake, and whether it is running.
+
+        Cheap on purpose - one PID read and one adapter query - because a
+        dashboard polls this continuously while parked.
+        """
+        rpm: float | None = None
+        awake = False
+        try:
+            reading = self.read("RPM")
+            if reading is not None:
+                awake = True
+                rpm = reading.value if isinstance(reading.value, (int, float)) else None
+        except (ObdError, TransportError):
+            awake = False
+
+        try:
+            voltage = self.elm.read_voltage()
+        except (ObdError, TransportError):
+            voltage = None
+
+        if not awake:
+            # The adapter answering while the ECU does not is a sleeping car;
+            # neither answering means the adapter itself is gone.
+            state = CAR_ASLEEP if voltage is not None else CAR_UNREACHABLE
+            return CarState(state, None, voltage)
+
+        if rpm is not None and rpm > 0:
+            return CarState(CAR_RUNNING, rpm, voltage)
+        # A stopped engine can still be cranking or freshly stalled; the
+        # alternator is the tie-breaker when the RPM PID reads zero.
+        if voltage is not None and voltage >= CHARGING_VOLTAGE:
+            return CarState(CAR_RUNNING, rpm, voltage)
+        return CarState(CAR_IGNITION, rpm, voltage)
 
     def read_vin(self) -> str | None:
         """Mode 09 PID 02. Cars built before roughly 2005 will not answer."""

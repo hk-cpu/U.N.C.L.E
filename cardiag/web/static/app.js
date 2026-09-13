@@ -886,6 +886,103 @@
     });
   }
 
+  /* --------------------------------------------------------- cockpit mode */
+
+  /* A phone left on the dash has two jobs it cannot do by itself: stay awake
+     while you are driving, and stop draining when you are not. The first is a
+     wake lock. The second is this - the car itself is the ignition signal,
+     because the ECU stops answering when the key comes out while the adapter,
+     wired to the always-live pin 16, keeps talking.
+
+     What a web page cannot do is turn a sleeping screen back ON. Releasing the
+     lock lets the phone sleep; waking it has to come from the phone being
+     powered by an ignition-switched socket. Cockpit mode owns the half it can
+     actually deliver, and the README says plainly which half that is. */
+
+  const COCKPIT_POLL_AWAKE = 4000;    // while driving, a light touch
+  const COCKPIT_POLL_ASLEEP = 15000;  // parked: barely wake the radio
+
+  const cockpit = { on: false, timer: null, state: null };
+
+  function cockpitEnabled() {
+    try { return localStorage.getItem("cardiag.cockpit") === "1"; }
+    catch { return false; }
+  }
+
+  function rememberCockpit(on) {
+    try { localStorage.setItem("cardiag.cockpit", on ? "1" : "0"); }
+    catch { /* private mode; the toggle still works for this session */ }
+  }
+
+  $("cockpit").addEventListener("change", (event) => {
+    setCockpit(event.target.checked);
+  });
+
+  function setCockpit(on) {
+    cockpit.on = on;
+    $("cockpit").checked = on;
+    rememberCockpit(on);
+    clearTimeout(cockpit.timer);
+    cockpit.timer = null;
+
+    if (!on) {
+      cockpit.state = null;
+      showAsleep(false);
+      return;
+    }
+    pollCarState();
+  }
+
+  async function pollCarState() {
+    if (!cockpit.on) return;
+
+    let payload;
+    try {
+      payload = await get("/api/car-state");
+    } catch {
+      // The adapter may have power-cycled with the key. Try to reopen it once
+      // per tick rather than sitting on a dead session.
+      try { await post("/api/reconnect", {}); } catch { /* still gone */ }
+      cockpit.timer = setTimeout(pollCarState, COCKPIT_POLL_ASLEEP);
+      return;
+    }
+
+    applyCarState(payload);
+    cockpit.timer = setTimeout(pollCarState,
+      payload.awake ? COCKPIT_POLL_AWAKE : COCKPIT_POLL_ASLEEP);
+  }
+
+  function applyCarState(payload) {
+    const was = cockpit.state;
+    cockpit.state = payload.state;
+    if (payload.state === was) return;      // only act on a transition
+
+    const onGauges = document.getElementById("view-gauges")
+      .classList.contains("is-active");
+
+    if (payload.awake) {
+      showAsleep(false);
+      // Don't drag someone back to the cluster if they navigated away; just
+      // be ready for when they return.
+      if (onGauges && !gauges.running) startGauges();
+      else if (gauges.running) requestWakeLock();
+      return;
+    }
+
+    // Car is off: stop polling it, drop the lock, let the screen go dark.
+    $("asleep-state").textContent =
+      payload.state === "asleep" ? "Car is off" : "Adapter not responding";
+    $("asleep-detail").textContent = payload.detail || "";
+    showAsleep(true);
+    if (gauges.running) stopGauges();
+    releaseWakeLock();
+  }
+
+  function showAsleep(on) {
+    $("asleep").hidden = !on;
+    $("cluster").classList.toggle("is-asleep", on);
+  }
+
   /* ------------------------------------------------------------ assistant */
 
   // "good" means actively fine; "info" means there is nothing to judge yet - a
@@ -1372,8 +1469,16 @@
     const status = await refreshStatus();
     if (!status.connected) return;
 
+    // A dash-mounted phone should come back up in the mode it was left in.
+    const params = new URLSearchParams(location.search);
+    if (cockpitEnabled() || params.get("cockpit") === "1") {
+      showView("gauges");
+      setCockpit(true);
+      return;
+    }
+
     // App shortcuts arrive as ?view=live and friends.
-    const wanted = new URLSearchParams(location.search).get("view");
+    const wanted = params.get("view");
     showView(VIEWS.includes(wanted) ? wanted : "assistant");
   })();
 })();

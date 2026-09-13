@@ -156,6 +156,36 @@ class VehicleService:
                 "profiles": sorted(vehicles.PROFILES),
             }
 
+    # -- following the ignition --------------------------------------------
+    def car_state(self) -> dict:
+        """Whether the car is running, merely awake, or asleep.
+
+        A dashboard left on the windscreen polls this while parked, so it must
+        stay cheap and must never raise just because the car went to sleep -
+        that is the normal case it exists to report.
+        """
+        with self._lock:
+            session = self._require()
+            state = session.car_state()
+
+        payload = state.to_dict()
+        payload["url"] = self._url
+        return payload
+
+    def reconnect(self) -> dict:
+        """Reopen the last connection, for when the adapter lost power.
+
+        Turning the key can power-cycle the adapter on some sockets, which
+        drops the serial port underneath us. The dashboard should recover from
+        that on its own rather than showing an error until someone taps it.
+        """
+        url = self._url
+        if not url:
+            raise ServiceError("no previous connection to reopen")
+
+        vehicle = self._profile.key if self._profile else None
+        return self.connect(url, vehicle=vehicle)
+
     # -- the assistant -----------------------------------------------------
     def explain(self) -> dict:
         """A full scan, said in plain language.

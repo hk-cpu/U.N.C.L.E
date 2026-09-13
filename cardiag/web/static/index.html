@@ -155,6 +155,9 @@
     <div class="view-head">
       <button class="btn btn-primary" id="gauge-toggle" type="button">Start</button>
       <button class="btn btn-quiet" id="gauge-fullscreen" type="button">Full screen</button>
+      <label class="switch" title="Follow the ignition: sleep when the car does">
+        <input type="checkbox" id="cockpit"> Cockpit
+      </label>
       <span class="muted" id="gauge-meta"></span>
     </div>
 
@@ -182,6 +185,14 @@
       </div>
 
       <div class="readouts" id="readouts"></div>
+
+      <!-- Shown over the cluster when the key goes out. The screen is allowed
+           to sleep behind this, which is the whole point of cockpit mode. -->
+      <div class="asleep" id="asleep" hidden>
+        <div class="asleep-mark" aria-hidden="true">⏻</div>
+        <p class="asleep-state" id="asleep-state">Car is off</p>
+        <p class="asleep-detail" id="asleep-detail"></p>
+      </div>
 
       <div class="sprint" id="sprint">
         <div class="sprint-label">0&ndash;100 km/h</div>

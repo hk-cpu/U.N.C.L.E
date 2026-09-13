@@ -173,6 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.service.monitor_tests())
             elif path == "/api/calibration":
                 self._json({"calibration": self.service.calibration()})
+            elif path == "/api/car-state":
+                self._json(self.service.car_state())
             elif path == "/api/assistant":
                 self._json(self.service.explain())
             elif path == "/api/assistant/live":
@@ -198,6 +200,8 @@ class Handler(BaseHTTPRequestHandler):
                 timeout=float(body.get("timeout") or 5.0),
                 vehicle=body.get("vehicle"),
             ))
+        elif path == "/api/reconnect":
+            self._json(self.service.reconnect())
         elif path == "/api/disconnect":
             self._json(self.service.disconnect())
         elif path == "/api/live/start":

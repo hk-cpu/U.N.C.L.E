@@ -138,6 +138,13 @@ class SimulatorTransport(Transport):
         self._mil = bool(self.profile["mil"])
         self._cleared_at: float | None = None
 
+        #: Ignition state. The adapter is powered from DLC pin 16, which is live
+        #: whether or not the key is in, so a sleeping car still answers ATRV
+        #: while the ECU says nothing at all. That asymmetry is how cardiag
+        #: tells "car is off" from "adapter is unplugged".
+        self.ignition = True
+        self.engine_running = True
+
         self.vin = self.profile.get("vin", VIN)
         self.ecu_name = self.profile.get("ecu_name", ECU_NAME)
         self.supported = set(SUPPORTED_PIDS)
@@ -191,6 +198,13 @@ class SimulatorTransport(Transport):
             self._emit(self._at(command[2:]))
             return
 
+        if not self.ignition:
+            # Key out: the modules are asleep and nothing answers the bus. The
+            # adapter is still powered and still talks, which is exactly what a
+            # real one does.
+            self._emit("NO DATA")
+            return
+
         response = self._obd(command)
         self._emit(response)
 
@@ -208,7 +222,10 @@ class SimulatorTransport(Transport):
             self._headers = command.endswith("1")
             return "OK"
         if command == "RV":
-            # Alternator charging voltage, wobbling slightly like the real thing.
+            # The adapter measures the port itself, so it answers regardless of
+            # ignition: alternator voltage running, battery voltage otherwise.
+            if not self.engine_running:
+                return "12.4V" if self.ignition else "12.5V"
             return f"{14.1 + math.sin(self._elapsed() / 3) * 0.2:.1f}V"
         if command == "DPN":
             return "A6"
@@ -368,6 +385,13 @@ class SimulatorTransport(Transport):
     def _engine_state(self) -> dict[str, float]:
         """A short drive cycle: idle, pull away, cruise, slow down, repeat."""
         t = self._elapsed()
+
+        if not self.engine_running:
+            # Key on, engine off: the ECU answers, but nothing is turning.
+            return {
+                "throttle": 0.0, "speed": 0.0, "rpm": 0.0, "coolant": 18.0,
+                "load": 0.0, "t": t,
+            }
         phase = (t % 60.0) / 60.0
         jitter = self._random.uniform(-0.015, 0.015)
 

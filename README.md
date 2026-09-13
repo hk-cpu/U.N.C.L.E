@@ -165,6 +165,46 @@ The guide's *Gauge v2* — decoding RPM and speed straight off CAN-C broadcasts 
 ten times the rate — needs the ESP32 hardware, not this adapter. See *Raw CAN,
 and where cardiag stops* below.
 
+#### Cockpit mode — following the ignition
+
+A phone mounted on the dash has two problems: staying awake while you drive, and
+not draining itself flat while you are at work. Tick **Cockpit** on the Gauges
+tab and the app follows the key.
+
+It can do this because it is already plugged into the OBD port, and the port
+tells you the ignition state without any extra wiring. The ELM327 runs off DLC
+pin 16, which is live with the key out, so three states are distinguishable:
+
+| What the port says | State |
+|---|---|
+| ECU answers, engine turning (or charging voltage) | **running** |
+| ECU answers, 0 rpm, ~12.4 V | **ignition on, engine off** |
+| ECU silent, adapter still reports voltage | **car is off** |
+| Nothing answers at all | **adapter unplugged** |
+
+That last distinction is the one that matters: "the car is off" is normal and
+the screen should go dark, while "the adapter is gone" is a fault worth showing.
+Reading one as the other means either a phone that never sleeps, or a dashboard
+that goes blank without telling you why.
+
+When the car sleeps, cockpit mode stops the sampler, drops the wake lock and
+shows a dim *Car is off* panel. Measured against the simulator, adapter traffic
+goes from **120 commands/second to 0.13** — one cheap check every 15 seconds.
+When the key goes back in, it reconnects and the cluster comes back on its own.
+The setting survives a restart, so the phone boots straight into the cluster.
+
+**The half this cannot do.** A web page can stop a screen sleeping; it cannot
+turn a sleeping screen back on. That has to come from the phone being powered by
+an **ignition-switched** socket, so applying power wakes it — which is a good
+idea anyway, because a permanently live socket will flatten your battery. The
+front outlet on these cars is often constant; check it with a meter, key out,
+and if it stays live, use an add-a-fuse on a switched circuit instead.
+
+**Heat is what actually kills the phone**, not the charging. A phone held at
+100% in a hot car degrades fast, so cap the charge around 80% if your phone
+offers it, and prefer an air-vent mount over the windscreen — in a Riyadh
+summer the A/C airflow is the best cooling you will get for free.
+
 ### Catching it before it breaks
 
 A code reader tells you what already failed. Mode 06 tells you what is *about*
