@@ -1,0 +1,54 @@
+{
+  "name": "cardiag — car diagnostics",
+  "short_name": "cardiag",
+  "description": "Read and interpret your car's on-board diagnostics.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0d0d0d",
+  "theme_color": "#1a1a19",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Health check",
+      "short_name": "Health",
+      "description": "Scan the car and show what needs attention",
+      "url": "/?view=scan"
+    },
+    {
+      "name": "Live data",
+      "short_name": "Live",
+      "description": "Watch engine data while the car runs",
+      "url": "/?view=live"
+    },
+    {
+      "name": "Trouble codes",
+      "short_name": "Codes",
+      "description": "Read stored trouble codes",
+      "url": "/?view=codes"
+    }
+  ]
+}
