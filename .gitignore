@@ -9,3 +9,4 @@ venv/
 *.csv
 *.db
 *.sqlite
+firmware/test/test_obd

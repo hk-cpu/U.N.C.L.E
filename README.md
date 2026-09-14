@@ -288,6 +288,12 @@ Module gateway, and the body bus (CAN-B, on DLC pins 3 and 11) is a separate
 network at a different bit rate. An ELM327 is a diagnostic translator, not a
 sniffer — it cannot see either of those, whatever you plug it into.
 
+There is now firmware for that: **[`firmware/`](firmware/)** puts cardiag on an
+ESP32 talking CAN directly, replacing the ELM327 rather than driving one. Its
+decoding is plain C and is tested on an ordinary computer against the worked
+examples in the vehicle hex reference; its CAN transport is not, and cannot be
+without the board.
+
 So the **Gauges** tab polls — which is exactly the guide's Gauge v1, and works
 today with what you own. Going faster than polling, or reading anything the
 diagnostic layer does not expose (steering-wheel buttons, MDS state, gear
