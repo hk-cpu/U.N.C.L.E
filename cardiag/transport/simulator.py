@@ -145,6 +145,10 @@ class SimulatorTransport(Transport):
         self.ignition = True
         self.engine_running = True
 
+        #: Set to a monotonic start time to drive a wide-open-throttle pull
+        #: instead of the ordinary drive cycle. None means the normal cycle.
+        self.wide_open: float | None = None
+
         self.vin = self.profile.get("vin", VIN)
         self.ecu_name = self.profile.get("ecu_name", ECU_NAME)
         self.supported = set(SUPPORTED_PIDS)
@@ -152,6 +156,15 @@ class SimulatorTransport(Transport):
         if self.profile.get("v8"):
             self.supported |= V8_EXTRA_PIDS
             self.monitors |= V8_EXTRA_MONITORS
+
+    def start_pull(self) -> None:
+        """Begin a wide-open run from now.
+
+        Stored as elapsed-since-start, the same base ``_engine_state`` works in;
+        an absolute monotonic value here reads as a vast negative run length and
+        pins the pull at its first instant.
+        """
+        self.wide_open = self._elapsed()
 
     # -- transport plumbing ------------------------------------------------
     def open(self) -> None:
@@ -392,8 +405,27 @@ class SimulatorTransport(Transport):
                 "throttle": 0.0, "speed": 0.0, "rpm": 0.0, "coolant": 18.0,
                 "load": 0.0, "t": t,
             }
-        phase = (t % 60.0) / 60.0
         jitter = self._random.uniform(-0.015, 0.015)
+
+        if self.wide_open is not None:
+            # A wide-open pull, so the tuning analysis has something real to
+            # read. Timing is backed off as revs and heat build, which is the
+            # shape a tuner is looking for in a log.
+            run = t - self.wide_open
+            ramp = max(0.0, min(1.0, run / 6.0))
+            rpm = 1500 + ramp * 4100
+            return {
+                "throttle": 0.95,
+                "speed": 20 + ramp * 150,
+                "rpm": rpm,
+                "coolant": 90.0,
+                "load": 0.95,
+                "timing": 26.0 - ramp * 9.0,
+                "intake": 38.0 + ramp * 18.0,
+                "t": t,
+            }
+
+        phase = (t % 60.0) / 60.0
 
         if phase < 0.20:
             throttle, speed_target = 0.06, 0.0
@@ -476,9 +508,13 @@ class SimulatorTransport(Transport):
         if pid == 0x0D:
             return bytes([int(state["speed"]) & 0xFF])
         if pid == 0x0E:
-            return bytes([int((12 + state["throttle"] * 18 + 64) * 2) & 0xFF])
+            # A pull drives timing directly, so a log shows advance being
+            # backed off rather than simply tracking the throttle.
+            advance = state.get("timing", 12 + state["throttle"] * 18)
+            return bytes([int((advance + 64) * 2) & 0xFF])
         if pid == 0x0F:
-            return bytes([int(24 + state["throttle"] * 8) + 40])
+            intake = state.get("intake", 24 + state["throttle"] * 8)
+            return bytes([int(intake) + 40])
         if pid == 0x10:
             return _u16(int((1.9 + state["load"] * 42) * 100))
         if pid == 0x11:
