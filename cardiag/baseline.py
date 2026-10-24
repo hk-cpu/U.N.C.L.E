@@ -307,13 +307,25 @@ def _compare_misfires(before: dict, after: dict) -> list[Change]:
         delta = new[cylinder] - old[cylinder]
         if abs(delta) < 5:
             continue
+        # No direction. These counters are typically per drive cycle (see
+        # Session.misfire_counts), so they reset when the car is restarted.
+        # A count that fell may mean the misfire was fixed, or may only mean
+        # the counter rolled over since the snapshot - and calling that
+        # "better" tells someone their repair worked when nothing was repaired.
+        # A rise is just as ambiguous: it can be a worse misfire or simply more
+        # running this cycle. The numbers are shown; the claim is not made.
         changes.append(Change(
             category="misfire",
             label=f"Misfire counts, cylinder {cylinder}",
             before=str(old[cylinder]),
             after=str(new[cylinder]),
-            direction="worse" if delta > 0 else "better",
-            note=f"{'up' if delta > 0 else 'down'} {abs(delta)}",
+            direction="neutral",
+            note=(
+                f"{'up' if delta > 0 else 'down'} {abs(delta)}. These counters "
+                "usually reset each drive cycle, so this is not a trend - what "
+                "is worth reading is how the cylinders compare with each other "
+                "within each scan."
+            ),
         ))
     return changes
 

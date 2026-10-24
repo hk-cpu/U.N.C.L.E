@@ -79,7 +79,21 @@ class HealthReport:
         return "info"
 
     @property
+    def has_data(self) -> bool:
+        """Did the ECU actually answer anything worth judging?
+
+        An adapter can negotiate a protocol and then get nothing back - key
+        only part way, a module asleep, a flaky cable. Every analyser then
+        finds nothing, which is indistinguishable from a healthy car unless
+        this is asked first.
+        """
+        return bool(self.status or self.codes or self.readings
+                    or self.monitor_tests)
+
+    @property
     def headline(self) -> str:
+        if not self.has_data:
+            return "The scan returned no usable data"
         if self.status and self.status.mil_on:
             return "Check-engine light is ON"
         if any(finding.severity in ("critical", "serious") for finding in self.findings):
@@ -215,14 +229,31 @@ def analyse(report: HealthReport) -> list[Finding]:
     findings.extend(_analyse_temperatures(report))
 
     if not findings:
-        findings.append(
-            Finding(
-                "info",
-                "Nothing abnormal found",
-                "No trouble codes, and every live reading sampled was inside its "
-                "normal range.",
+        # No findings because nothing was wrong, or no findings because nothing
+        # was read? Those are opposite answers, and only one of them is good
+        # news. Saying "every live reading was inside its normal range" when
+        # there were no live readings is the worst way to get this wrong.
+        if not report.has_data:
+            findings.append(
+                Finding(
+                    "serious",
+                    "The scan returned no usable data",
+                    "The adapter negotiated a protocol, but the ECU answered no "
+                    "status, no codes and no live readings. That is not a clean "
+                    "bill of health - it is a scan that did not happen.",
+                    "Turn the ignition fully on (engine running is surest), "
+                    "check the adapter is seated in the port, and scan again.",
+                )
             )
-        )
+        else:
+            findings.append(
+                Finding(
+                    "info",
+                    "Nothing abnormal found",
+                    "No trouble codes, and every live reading sampled was inside "
+                    "its normal range.",
+                )
+            )
 
     findings.sort(key=lambda item: FINDING_SEVERITY.index(item.severity))
     return findings

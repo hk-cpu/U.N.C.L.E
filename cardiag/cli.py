@@ -961,15 +961,29 @@ def _list_baselines(args: argparse.Namespace, store) -> int:
 
 
 def _command_compare(args: argparse.Namespace, session: Session) -> int:
+    # One store can hold snapshots for several cars, so "latest" has to mean
+    # the latest *for this car*. Without this, comparing against the newest
+    # snapshot globally reports another vehicle's codes as changes on this one.
+    current_vin = session.read_vin()
+
+    def pick(reference: str):
+        snapshot = store.resolve(reference, vin=current_vin)
+        if (current_vin and snapshot.vin and snapshot.vin != current_vin):
+            raise KeyError(
+                f"snapshot #{snapshot.id} was taken on VIN {snapshot.vin}, "
+                f"but the car connected now is {current_vin}"
+            )
+        return snapshot
+
     with _open_store(args) as store:
         try:
-            before = store.resolve(args.before)
+            before = pick(args.before)
         except KeyError as exc:
             return _fail(str(exc.args[0]))
 
         if args.after:
             try:
-                after = store.resolve(args.after)
+                after = pick(args.after)
             except KeyError as exc:
                 return _fail(str(exc.args[0]))
             after_label = f"snapshot #{after.id} ({after.label})"

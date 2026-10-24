@@ -230,3 +230,37 @@ def test_a_genuinely_clean_car_is_still_headlined_as_clean():
 
     with Session("sim://?profile=charger") as car:
         assert report_module.build(car).headline == "No faults found"
+
+
+def test_a_silent_ecu_is_not_a_clean_bill_of_health():
+    """No findings because nothing was wrong, or because nothing was read?
+
+    The adapter can negotiate a protocol and then get nothing back - a key only
+    part way round, a module asleep, a flaky cable. Every analyser then returns
+    nothing, and the fallback used to announce "No trouble codes, and every
+    live reading sampled was inside its normal range" when not one reading had
+    been sampled.
+    """
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    with Session("sim://?profile=charger") as car:
+        car.connect()
+        car.transport.ignition = False      # modules asleep, adapter still up
+        result = report_module.build(car)
+
+    assert result.has_data is False
+    assert result.headline == "The scan returned no usable data"
+    assert [f.severity for f in result.findings] == ["serious"]
+    assert "did not happen" in result.findings[0].detail
+
+
+def test_a_car_that_answered_is_still_judged_normally():
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    with Session("sim://?profile=charger") as car:
+        result = report_module.build(car)
+
+    assert result.has_data is True
+    assert result.headline == "No faults found"

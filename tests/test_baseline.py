@@ -103,12 +103,44 @@ def test_degradation_is_reported_as_worse(store):
 
     changes = baseline_module.compare(before, after)
     assert changes
-    assert all(c.direction == "worse" for c in changes if c.category == "misfire")
 
     misfires = {c.label: c for c in changes if c.category == "misfire"}
     assert "Misfire counts, cylinder 4" in misfires
     # Worse changes sort to the front.
     assert changes[0].direction == "worse"
+
+
+def test_a_misfire_count_change_claims_no_direction(store):
+    """These counters reset each drive cycle, so a delta is not a trend.
+
+    This test previously asserted the opposite - that a rising count reads as
+    "worse" and so, by the same code path, a falling one reads as "better".
+    That second half is the damaging one: a counter that merely rolled over
+    between drive cycles would tell someone their repair had worked.
+    """
+    before = store.save(snapshot_of("charger"), "healthy")
+    after = store.save(snapshot_of("charger-wear"), "worn")
+
+    misfires = [c for c in baseline_module.compare(before, after)
+                if c.category == "misfire"]
+    assert misfires
+
+    for change in misfires:
+        assert change.direction == "neutral"
+        assert "reset each drive cycle" in change.note
+        # The numbers are still shown - only the claim about them is withheld.
+        assert change.before and change.after
+
+
+def test_a_counter_that_reset_is_not_called_a_repair(store):
+    """The failure mode in full: worn car, then a fresh drive cycle."""
+    before = store.save(snapshot_of("charger-wear"), "worn")
+    after = store.save(snapshot_of("charger"), "same car, counters reset")
+
+    misfires = [c for c in baseline_module.compare(before, after)
+                if c.category == "misfire"]
+    assert misfires, "the counts did change"
+    assert not any(c.direction == "better" for c in misfires)
 
 
 def test_repair_is_reported_as_better(store):
@@ -220,3 +252,40 @@ def test_cli_empty_list(capsys, tmp_path):
                     "--store", str(tmp_path / "empty.db"))
     assert code == 0
     assert "No snapshots saved yet" in out
+
+
+# ---------------------------------------------------------------------------
+# One store, several cars
+# ---------------------------------------------------------------------------
+
+def test_latest_is_scoped_to_one_car(store):
+    """A shared store holds more than one vehicle.
+
+    Resolving "latest" globally picks whichever snapshot is newest across every
+    car in the database, so comparing would report a different vehicle's codes
+    and readings as changes on this one.
+    """
+    store.save({"headline": "a", "vehicle": {"vin": "OTHERCAR12345678X"}}, "theirs")
+    store.save({"headline": "b", "vehicle": {"vin": "2B3KA53H66H123456"}}, "mine")
+    store.save({"headline": "c", "vehicle": {"vin": "OTHERCAR12345678X"}}, "theirs again")
+
+    assert store.latest().label == "theirs again"
+    assert store.resolve("latest", vin="2B3KA53H66H123456").label == "mine"
+    assert store.resolve("first", vin="2B3KA53H66H123456").label == "mine"
+
+
+def test_comparing_across_cars_is_refused_by_the_cli(capsys, tmp_path):
+    from cardiag.cli import main
+
+    db = str(tmp_path / "two.db")
+    assert main(["--sim", "--sim-profile", "charger", "baseline", "mine",
+                 "--store", db]) == 0
+    capsys.readouterr()
+
+    # The default profile is a different car with a different VIN.
+    code = main(["--sim", "--sim-profile", "default", "compare", "1",
+                 "--store", db])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "was taken on VIN" in captured.out + captured.err
