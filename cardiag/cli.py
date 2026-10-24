@@ -8,7 +8,7 @@ import os
 import sys
 import time
 
-from . import __version__, baseline as baseline_module, console, dtc, elm327
+from . import __version__, baseline as baseline_module, canbus, console, dtc, elm327
 from . import mode06
 from . import pids, vehicles, vin as vin_module
 from . import report as report_module
@@ -182,6 +182,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("vehicle", help="show what cardiag knows about this model")
 
+    canbus = sub.add_parser(
+        "canbus", help="show the bus and wiring map for this model (no car needed)")
+    canbus.add_argument("--category", choices=("power", "ground", "ignition",
+                                               "can", "sensor", "actuator"),
+                        help="show only circuits in one category")
+
     decode = sub.add_parser("vin", help="decode a VIN")
     decode.add_argument("vin", nargs="?",
                         help="the VIN to decode; read from the car when omitted")
@@ -226,6 +232,8 @@ def _run(argv: list[str] | None) -> int:
         return _command_vin(args, session=None)
     if command == "vehicle" and args.profile_object is not None:
         return _command_vehicle(args, session=None)
+    if command == "canbus":
+        return _command_canbus(args)
     if command in ("ui", "app"):
         # The UI manages its own connection, so it does not take one from here.
         return _command_ui(args, app_window=command == "app")
@@ -1145,6 +1153,86 @@ def _command_vehicle(args: argparse.Namespace, session: Session | None) -> int:
                 print(console.wrap(console.paint(
                     "Codes: " + ", ".join(triggers), "dim")))
             print()
+    return 0
+
+
+_CATEGORY_TITLES = {
+    canbus.POWER: "Power",
+    canbus.GROUND: "Grounds",
+    canbus.IGNITION: "Ignition wake-up",
+    canbus.CAN: "CAN-C bus",
+    canbus.SENSOR: "Primary sensors",
+    canbus.ACTUATOR: "Actuators (reported, not driven)",
+}
+
+
+def _command_canbus(args: argparse.Namespace) -> int:
+    category = getattr(args, "category", None)
+
+    if args.json:
+        payload = {
+            "diag_request_id": canbus.DIAG_REQUEST_ID,
+            "diag_response_id": canbus.DIAG_RESPONSE_ID,
+            "buses": [
+                {"name": b.name, "speed_kbps": b.speed_kbps,
+                 "standard": b.standard, "where": b.where, "access": b.access}
+                for b in canbus.BUSES
+            ],
+            "dlc_pins": [
+                {"pin": p.pin, "function": p.function, "note": p.note}
+                for p in canbus.DLC_PINS
+            ],
+            "circuits": [
+                {"circuit": c.circuit, "connector": c.connector, "pin": c.pin,
+                 "color": c.color, "function": c.function,
+                 "category": c.category, "pid": c.pid, "note": c.note}
+                for c in canbus.circuits(category)
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(console.paint("CAN bus and wiring map", "bold"))
+    print(console.paint("Dodge Charger R/T (5.7 HEMI) - read-only reference", "dim"))
+    print()
+
+    if category is None:
+        print(console.heading("Buses"))
+        for bus in canbus.BUSES:
+            print(f" {console.paint(bus.name, 'bold')} "
+                  f"- {bus.speed_kbps:g} kbps, {bus.standard}")
+            print(console.wrap(bus.where))
+            print(console.wrap(console.paint(bus.access, "dim")))
+            print()
+
+        print(console.heading("Diagnostic connector (J1962)"))
+        rows = [(f"pin {p.pin}", p.function) for p in canbus.DLC_PINS]
+        print(console.table(rows))
+        for pin in canbus.DLC_PINS:
+            if pin.note:
+                print(console.wrap(console.paint(f"pin {pin.pin}: {pin.note}", "dim")))
+        print()
+
+    shown = [category] if category else [
+        canbus.POWER, canbus.GROUND, canbus.IGNITION, canbus.CAN,
+        canbus.SENSOR, canbus.ACTUATOR,
+    ]
+    for cat in shown:
+        group = canbus.circuits(cat)
+        if not group:
+            continue
+        print(console.heading(_CATEGORY_TITLES.get(cat, cat)))
+        rows = [
+            (c.location, c.circuit, c.color,
+             c.function + (f"  ->  {c.pid}" if c.pid else ""))
+            for c in group
+        ]
+        print(console.table(rows, headers=("where", "circuit", "wire", "function")))
+        for circuit in group:
+            if circuit.note:
+                print(console.wrap(console.paint(
+                    f"{circuit.location}: {circuit.note}", "dim")))
+        print()
     return 0
 
 
