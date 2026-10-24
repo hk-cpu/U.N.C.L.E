@@ -86,6 +86,14 @@ class HealthReport:
             return "No warning light, but something needs attention"
         if self.codes:
             return "No warning light; stored codes present"
+        # Incomplete readiness and developing wear land as "moderate". Falling
+        # through to "No faults found" put that headline directly above a list
+        # of things to check - the same contradiction explain.py already
+        # refuses, fixed here at its source rather than only in the assistant.
+        if self.status and not self.status.emissions_ready:
+            return "No faults found, but the emissions monitors are not ready"
+        if any(finding.severity == "moderate" for finding in self.findings):
+            return "No faults found, but something is worth checking"
         return "No faults found"
 
     def to_dict(self) -> dict:

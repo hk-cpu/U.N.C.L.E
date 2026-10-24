@@ -202,3 +202,31 @@ def test_monitors_can_be_skipped():
         # Without mode 06 this car looks perfectly healthy, which is exactly
         # why reading it matters.
         assert result.headline == "No faults found"
+
+
+def test_a_car_with_unready_monitors_is_not_headlined_as_clean():
+    """The headline sat directly above the findings contradicting it.
+
+    The emissions profile has no codes and no warning light but four
+    incomplete readiness monitors, which _analyse_monitors raises as a
+    moderate finding. "No faults found" over the top of that told the owner
+    the car was fine while the same report said its emissions pre-check
+    would fail.
+    """
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    with Session("sim://?profile=emissions") as car:
+        result = report_module.build(car)
+
+    assert result.headline != "No faults found"
+    assert "monitors are not ready" in result.headline
+    assert not result.codes and not (result.status and result.status.mil_on)
+
+
+def test_a_genuinely_clean_car_is_still_headlined_as_clean():
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    with Session("sim://?profile=charger") as car:
+        assert report_module.build(car).headline == "No faults found"

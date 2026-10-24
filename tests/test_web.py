@@ -316,6 +316,88 @@ def http():
     server.server_close()
 
 
+def raw_post(base, path, body, ctype="application/json", origin=None):
+    """A POST with full control of the headers, for forging one."""
+    request = urllib.request.Request(
+        base + path, data=json.dumps(body).encode(), method="POST")
+    request.add_header("Content-Type", ctype)
+    if origin:
+        request.add_header("Origin", origin)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
+
+
+# ---------------------------------------------------------------------------
+# Cross-site request forgery
+#
+# Bound to localhost there is no token at all, so without these checks any page
+# the user happened to be viewing could drive this API. It cannot read the
+# reply, but clearing the codes does not need a reply - it takes the readiness
+# monitors with it, which is a failed inspection and a week of drive cycles.
+# ---------------------------------------------------------------------------
+
+def test_a_cross_origin_post_is_refused(http):
+    http("/api/connect", {"url": CHARGER})
+
+    status, payload = raw_post(http.base, "/api/clear", {"confirm": "clear"},
+                               origin="http://evil.example")
+    assert status == 403
+    assert "cross-origin" in payload["error"]
+
+    # The codes are still there.
+    assert http("/api/codes")[1]["codes"]
+
+
+def test_a_text_plain_post_is_refused_even_though_the_body_is_json(http):
+    """The forgery that needs no Origin at all.
+
+    text/plain is CORS-safelisted, so a cross-origin fetch can send it with no
+    preflight. The body is still JSON and _body() would parse it happily, so
+    the content type is the only thing standing in the way.
+    """
+    http("/api/connect", {"url": CHARGER})
+
+    status, payload = raw_post(http.base, "/api/clear", {"confirm": "clear"},
+                               ctype="text/plain")
+    assert status == 415
+    assert "application/json" in payload["error"]
+    assert http("/api/codes")[1]["codes"]
+
+
+def test_a_form_encoded_post_is_refused(http):
+    http("/api/connect", {"url": CHARGER})
+    status, _ = raw_post(http.base, "/api/clear", {"confirm": "clear"},
+                         ctype="application/x-www-form-urlencoded")
+    assert status == 415
+
+
+def test_the_app_itself_still_works_from_its_own_origin(http):
+    http("/api/connect", {"url": CHARGER})
+    status, _ = raw_post(http.base, "/api/clear", {"confirm": "clear"},
+                         origin=http.base)
+    assert status == 200
+    assert http("/api/codes")[1]["codes"] == []
+
+
+def test_a_client_that_sends_no_origin_still_works(http):
+    """The CLI, curl and these tests send no Origin; only browsers do."""
+    http("/api/connect", {"url": CHARGER})
+    status, _ = raw_post(http.base, "/api/clear", {"confirm": "clear"})
+    assert status == 200
+
+
+def test_reads_are_not_blocked_by_the_origin_check(http):
+    """Nothing on GET changes state, so a cross-origin read costs nothing."""
+    http("/api/connect", {"url": CHARGER})
+    request = urllib.request.Request(http.base + "/api/status")
+    request.add_header("Origin", "http://evil.example")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 200
+
+
 def test_serves_the_page_and_its_assets(http):
     for path, marker in (("/", b"<title>cardiag"), ("/app.css", b"--critical"),
                          ("/app.js", b"cardiag UI")):

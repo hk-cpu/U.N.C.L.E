@@ -70,6 +70,34 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Cardiag-Token") or (query.get("token") or [None])[0]
         return bool(supplied) and secrets.compare_digest(supplied, token)
 
+    def _same_origin(self) -> bool:
+        """Refuse a state-changing request another website set in motion.
+
+        Bound to localhost there is no token, so without this any page the user
+        happens to be viewing could POST to the API. It cannot read the reply,
+        but it does not need to: clearing the codes takes the readiness
+        monitors with it.
+
+        A missing Origin is allowed, because non-browser clients - the CLI,
+        curl, the tests - do not send one. The content-type requirement below
+        is what covers that gap, so the two checks are complementary.
+        """
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return urlparse(origin).netloc == (self.headers.get("Host") or "")
+
+    def _json_request(self) -> bool:
+        """Require application/json on anything that changes state.
+
+        This is the half that stops a forged POST with no Origin at all. A
+        cross-origin fetch may send text/plain, which is CORS-safelisted and
+        needs no preflight; application/json is not safelisted, so asking for
+        it forces a preflight this server never answers.
+        """
+        declared = (self.headers.get("Content-Type") or "").split(";")[0]
+        return declared.strip().lower() == "application/json"
+
     def _send(self, status: int, body: bytes, content_type: str,
               extra_headers: dict[str, str] | None = None,
               cacheable: bool = False) -> None:
@@ -137,6 +165,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._authorised(query):
             self._error("missing or invalid token", HTTPStatus.FORBIDDEN)
+            return
+
+        # Applied to every POST rather than per route, so a new endpoint cannot
+        # be added without them.
+        if not self._same_origin():
+            self._error("cross-origin request refused", HTTPStatus.FORBIDDEN)
+            return
+        if not self._json_request():
+            self._error("state-changing requests must be application/json",
+                        HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             return
 
         if not parsed.path.startswith("/api/"):
