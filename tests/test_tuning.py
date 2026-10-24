@@ -293,3 +293,30 @@ def test_nothing_is_compared_when_the_channel_is_missing_from_one_run():
     before = Pull(ramp(20, RPM=(1500, 5000), TIMING_ADVANCE=(26, 24)))
     after = Pull(ramp(20, RPM=(1500, 5000)))
     assert "Peak timing" not in topics(compare_pulls(before, after))
+
+
+def test_a_steady_rev_at_the_limiter_is_not_a_pull():
+    """Throttle alone cannot tell a run from a stationary rev.
+
+    The earlier predicate only rejected RPM *dropping* by more than 50 per
+    sample, so holding a steady 5,000 rpm with the throttle open produced a
+    full pull analysis - timing, heat soak, trims - for a car that never moved.
+    """
+    log = ramp(40, RPM=(5000, 5000), THROTTLE_POS=(95, 95))
+    assert find_pulls(log) == []
+
+
+def test_a_barely_rising_rev_is_not_a_pull():
+    log = ramp(40, RPM=(5000, 5150), THROTTLE_POS=(95, 95))
+    assert find_pulls(log) == []
+
+
+def test_a_pull_through_a_gearshift_is_not_split_in_two():
+    """A real pull dips through the upshift; that is one run, not two."""
+    log = (ramp(20, start=0, RPM=(1500, 5400), THROTTLE_POS=(95, 95))
+           + ramp(4, start=2.0, RPM=(5400, 3400), THROTTLE_POS=(95, 95))
+           + ramp(20, start=2.4, RPM=(3400, 5600), THROTTLE_POS=(95, 95)))
+
+    pulls = find_pulls(log)
+    assert len(pulls) == 1
+    assert pulls[0].rpm_range == (1500, 5600)

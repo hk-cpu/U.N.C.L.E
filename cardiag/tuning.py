@@ -47,6 +47,10 @@ WOT_THROTTLE = 70.0
 #: A pull shorter than this is a blip, not a run worth analysing.
 MIN_PULL_SECONDS = 1.5
 
+#: And one that did not gain this many revs is not a pull at all. Throttle
+#: alone cannot tell a run from a stationary rev held at the limiter.
+MIN_PULL_RPM_RISE = 400.0
+
 
 # ---------------------------------------------------------------------------
 # Samples
@@ -274,29 +278,34 @@ def find_pulls(samples: Sequence[Sample],
     runs: list[Pull] = []
     current: list[Sample] = []
 
-    previous_rpm: float | None = None
+    def close(gathered: list[Sample]) -> None:
+        if not gathered:
+            return
+        pull = Pull(gathered)
+        if pull.seconds < min_seconds:
+            return
+        # The net rise is what separates a run from a stationary rev. Testing
+        # it sample by sample instead would also split a real pull in two at
+        # the dip through an upshift.
+        first = next((s.get("RPM") for s in gathered if s.get("RPM") is not None), None)
+        last = next((s.get("RPM") for s in reversed(gathered)
+                     if s.get("RPM") is not None), None)
+        if first is None or last is None:
+            return
+        if last - first < MIN_PULL_RPM_RISE:
+            return
+        runs.append(pull)
+
     for sample in samples:
         throttle = sample.get(throttle_channel)
-        rpm = sample.get("RPM")
-
-        pulling = (throttle is not None and rpm is not None
-                   and throttle >= WOT_THROTTLE
-                   and (previous_rpm is None or rpm >= previous_rpm - 50))
-        previous_rpm = rpm if rpm is not None else previous_rpm
-
-        if pulling:
+        if throttle is not None and throttle >= WOT_THROTTLE \
+                and sample.get("RPM") is not None:
             current.append(sample)
             continue
-        if current:
-            pull = Pull(current)
-            if pull.seconds >= min_seconds:
-                runs.append(pull)
-            current = []
+        close(current)
+        current = []
 
-    if current:
-        pull = Pull(current)
-        if pull.seconds >= min_seconds:
-            runs.append(pull)
+    close(current)
     return runs
 
 

@@ -188,11 +188,17 @@ def build(session: Session, include_freeze_frame: bool = True,
     calibration: dict[str, list[str]] = {}
     if include_monitors:
         tests = session.monitor_tests()
-        misfires = {
-            cylinder: test.raw_value
-            for test in tests
-            if (cylinder := mode06.misfire_cylinder(test.mid)) is not None
-        }
+        # An ECU often reports several mode 06 tests for one cylinder -
+        # typically a this-drive-cycle counter and a longer-run average. Keep
+        # the worst, as Session.misfire_counts does; a plain comprehension
+        # keeps whichever arrived last, which can hide a high count behind a
+        # low one and quietly lose the fault this tool exists to find.
+        misfires = {}
+        for test in tests:
+            cylinder = mode06.misfire_cylinder(test.mid)
+            if cylinder is None:
+                continue
+            misfires[cylinder] = max(misfires.get(cylinder, 0), test.raw_value)
         if not misfires:
             misfires = session.misfire_counts()
         calibration = session.calibration()

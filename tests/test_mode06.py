@@ -264,3 +264,38 @@ def test_a_car_that_answered_is_still_judged_normally():
 
     assert result.has_data is True
     assert result.headline == "No faults found"
+
+def test_the_worst_count_survives_when_a_cylinder_reports_twice():
+    """ECUs report several mode 06 tests per cylinder.
+
+    Typically a this-drive-cycle counter and a longer-run average. The dict
+    comprehension this replaced kept whichever arrived last, so a low reading
+    could mask a high one - losing exactly the fault this tool exists to
+    surface. Session.misfire_counts already took the max; report.build did not.
+    """
+    from cardiag import mode06
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    base = mode06.MISFIRE_BASE + 4                      # cylinder 4
+    pair = [
+        mode06.TestResult(mid=base, tid=0x0B, scaling_id=0x24,
+                          raw_value=168, raw_min=0, raw_max=0),
+        mode06.TestResult(mid=base, tid=0x0C, scaling_id=0x24,
+                          raw_value=3, raw_min=0, raw_max=0),   # arrives last
+    ]
+
+    with Session("sim://?profile=charger-wear") as car:
+        car.monitor_tests = lambda *a, **k: pair
+        result = report_module.build(car)
+
+    assert result.misfire_counts[4] == 168, "the worst count must win, not the last"
+
+
+def test_report_and_session_agree_about_misfire_counts():
+    from cardiag import report as report_module
+    from cardiag.session import Session
+
+    with Session("sim://?profile=charger-wear") as car:
+        result = report_module.build(car)
+        assert result.misfire_counts == car.misfire_counts()

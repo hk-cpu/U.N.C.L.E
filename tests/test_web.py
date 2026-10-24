@@ -761,3 +761,32 @@ def test_open_browser_reports_how_it_opened(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "webbrowser",
                         type("W", (), {"open": staticmethod(lambda url: True)}))
     assert launcher.open_browser("http://x", app_window=True) == "browser tab"
+
+
+def test_the_ui_refuses_a_baseline_from_another_car(service, tmp_path):
+    """The CLI guards this; the Baselines tab must too.
+
+    /api/baselines lists snapshots for every car in the store, so without a
+    check the UI can present another vehicle's codes and readings as changes
+    on the connected one.
+    """
+    service.baseline_path = str(tmp_path / "two-cars.db")
+
+    # A snapshot belonging to a different car.
+    service.connect("sim://?profile=default")
+    other = service.save_baseline("someone else's car")["id"]
+    service.disconnect()
+
+    service.baseline_path = str(tmp_path / "two-cars.db")
+    service.connect(CHARGER)
+    with pytest.raises(ServiceError, match="was taken on VIN"):
+        service.compare_baseline(other)
+
+
+def test_the_ui_still_compares_a_snapshot_from_the_same_car(service, tmp_path):
+    service.baseline_path = str(tmp_path / "one-car.db")
+    service.connect(CHARGER)
+
+    mine = service.save_baseline("mine")["id"]
+    result = service.compare_baseline(mine)
+    assert "changes" in result

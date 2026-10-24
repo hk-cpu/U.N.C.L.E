@@ -399,6 +399,17 @@ class VehicleService:
             worst_severity=report.get("worst_severity"),
             payload=report,
         )
+        # One store holds snapshots for several cars, and the Baselines tab
+        # lists all of them. Comparing another vehicle's snapshot against this
+        # scan would present its codes and readings as changes on this car.
+        # The CLI refuses this; so must the UI, or the guard only covers one
+        # of the two ways in.
+        if before.vin and after.vin and before.vin != after.vin:
+            raise ServiceError(
+                f"snapshot #{before.id} was taken on VIN {before.vin}, but the "
+                f"car connected now is {after.vin}"
+            )
+
         changes = baseline_module.compare(before, after)
         return {
             "before": before.to_dict(),
