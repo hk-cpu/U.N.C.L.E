@@ -41,10 +41,14 @@ class CardiagServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, service: VehicleService, token: str | None):
+    def __init__(self, address, handler, service: VehicleService,
+                 token: str | None, allowed_hosts: set[str] | None = None):
         super().__init__(address, handler)
         self.service = service
         self.token = token
+        #: Hostnames this server will answer to. Anything else is a DNS
+        #: rebinding attempt - see Handler._known_host.
+        self.allowed_hosts = allowed_hosts or set(LOCAL_HOSTS)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -69,6 +73,21 @@ class Handler(BaseHTTPRequestHandler):
             return True
         supplied = self.headers.get("X-Cardiag-Token") or (query.get("token") or [None])[0]
         return bool(supplied) and secrets.compare_digest(supplied, token)
+
+    def _known_host(self) -> bool:
+        """Is the Host header one this server actually answers to?
+
+        Without this, comparing Origin against Host proves nothing: a page on
+        evil.example whose DNS has been re-pointed at 127.0.0.1 arrives with
+        *both* headers reading evil.example, so they match and the request
+        sails through. That is DNS rebinding, and a same-origin check that
+        trusts the attacker's own Host header does not stop it.
+        """
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return False
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return name.strip("[]").lower() in self.server.allowed_hosts  # type: ignore[attr-defined]
 
     def _same_origin(self) -> bool:
         """Refuse a state-changing request another website set in motion.
@@ -148,6 +167,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
+        if not self._known_host():
+            self._error("unrecognised Host header", HTTPStatus.FORBIDDEN)
+            return
         if not self._authorised(query):
             self._error("missing or invalid token", HTTPStatus.FORBIDDEN)
             return
@@ -163,6 +185,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
+        if not self._known_host():
+            self._error("unrecognised Host header", HTTPStatus.FORBIDDEN)
+            return
         if not self._authorised(query):
             self._error("missing or invalid token", HTTPStatus.FORBIDDEN)
             return
@@ -316,7 +341,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     # a plain click-through URL.
     token = None if host in LOCAL_HOSTS else secrets.token_urlsafe(16)
 
-    server = CardiagServer((host, port), Handler, service, token)
+    allowed = set(LOCAL_HOSTS) | {host.lower()}
+    server = CardiagServer((host, port), Handler, service, token, allowed)
     shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     url = f"http://{shown_host}:{server.server_address[1]}/"
     if token:

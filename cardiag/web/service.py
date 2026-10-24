@@ -296,11 +296,16 @@ class VehicleService:
         with self._lock:
             session = self._require()
             tests = session.monitor_tests()
-            counts = {
-                cylinder: test.raw_value
-                for test in tests
-                if (cylinder := mode06.misfire_cylinder(test.mid)) is not None
-            }
+            # Keep the worst per cylinder, as report.build and
+            # Session.misfire_counts do. Last-write-wins here would let the
+            # Monitors tab show 3 where another test for the same cylinder
+            # reported 168.
+            counts: dict[int, int] = {}
+            for test in tests:
+                cylinder = mode06.misfire_cylinder(test.mid)
+                if cylinder is None:
+                    continue
+                counts[cylinder] = max(counts.get(cylinder, 0), test.raw_value)
             if not counts:
                 counts = session.misfire_counts()
             deactivated = (

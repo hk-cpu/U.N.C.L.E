@@ -70,24 +70,36 @@ class Sample:
         return float(value)
 
 
+#: Column names that carry the timestamp, best first. cardiag's own CsvLogger
+#: writes "timestamp"; defaulting to "time" meant every row of its own logs was
+#: skipped, leaving the analysis with no samples and no complaint.
+TIME_KEYS = ("timestamp", "time", "elapsed_s")
+
+
 def samples_from_rows(rows: Iterable[dict[str, Any]],
-                      time_key: str = "time") -> list[Sample]:
+                      time_key: str | None = None) -> list[Sample]:
     """Build samples from CSV-ish rows, skipping anything unparseable.
 
     cardiag's own CSV log writes an epoch timestamp and one column per channel,
     so this reads its logs directly; a row from anywhere else works too as long
-    as it has a timestamp and numeric columns.
+    as it has a timestamp and numeric columns. Pass ``time_key`` to name the
+    column explicitly, otherwise the first of :data:`TIME_KEYS` present is used.
     """
+    rows = list(rows)
+    keys = (time_key,) if time_key else TIME_KEYS
+    chosen = next((key for key in keys
+                   if any(key in row for row in rows)), keys[0])
+
     out: list[Sample] = []
     for row in rows:
         try:
-            at = float(row[time_key])
+            at = float(row[chosen])
         except (KeyError, TypeError, ValueError):
             continue
 
         values: dict[str, float] = {}
         for key, raw in row.items():
-            if key == time_key:
+            if key in TIME_KEYS:
                 continue
             try:
                 values[key] = float(raw)

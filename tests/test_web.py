@@ -790,3 +790,60 @@ def test_the_ui_still_compares_a_snapshot_from_the_same_car(service, tmp_path):
     mine = service.save_baseline("mine")["id"]
     result = service.compare_baseline(mine)
     assert "changes" in result
+
+
+def test_dns_rebinding_is_refused(http):
+    """Comparing Origin to Host proves nothing on its own.
+
+    A page on evil.example whose DNS is re-pointed at 127.0.0.1 arrives with
+    *both* headers reading evil.example. They match, so the same-origin check
+    passes and the content-type gate is satisfied by the page's own fetch.
+    Only validating Host against names this server actually answers to stops
+    it - for reads as well as writes, since the point of rebinding is usually
+    to read.
+    """
+    http("/api/connect", {"url": CHARGER})
+
+    request = urllib.request.Request(http.base + "/api/status")
+    request.add_header("Host", "evil.example")
+    request.add_header("Origin", "http://evil.example")
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=10)
+    assert excinfo.value.code == 403
+
+    status, _ = raw_post(http.base, "/api/clear", {"confirm": "clear"},
+                         origin="http://evil.example")
+    assert status == 403
+    assert http("/api/codes")[1]["codes"], "the codes survived"
+
+
+def test_the_usual_local_hostnames_are_accepted(http):
+    port = http.base.rsplit(":", 1)[1]
+    for host in (f"127.0.0.1:{port}", f"localhost:{port}"):
+        request = urllib.request.Request(http.base + "/api/status")
+        request.add_header("Host", host)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.status == 200
+
+
+def test_the_monitors_tab_keeps_the_worst_misfire_count(service):
+    """/api/tests had its own last-write-wins comprehension.
+
+    report.build was fixed to aggregate with max; this separate path was not,
+    so the Monitors tab could display 3 for a cylinder another test reported
+    at 168.
+    """
+    from cardiag import mode06
+
+    base = mode06.MISFIRE_BASE + 4
+    pair = [
+        mode06.TestResult(mid=base, tid=0x0B, scaling_id=0x24,
+                          raw_value=168, raw_min=0, raw_max=0),
+        mode06.TestResult(mid=base, tid=0x0C, scaling_id=0x24,
+                          raw_value=3, raw_min=0, raw_max=0),
+    ]
+
+    service.connect("sim://?profile=charger-wear")
+    service._session.monitor_tests = lambda *a, **k: pair
+    # Keys are stringified for JSON.
+    assert service.monitor_tests()["misfire_counts"]["4"] == 168

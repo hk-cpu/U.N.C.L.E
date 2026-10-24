@@ -242,26 +242,59 @@ def compare(before: Snapshot, after: Snapshot) -> list[Change]:
 
 
 def _compare_calibration(before: dict, after: dict) -> list[Change]:
-    """A changed calibration ID means the module was reflashed."""
-    old = (before.get("calibration") or {}).get("calibration_ids") or []
-    new = (after.get("calibration") or {}).get("calibration_ids") or []
-    if not old and not new:
-        return []
-    if old == new:
-        return []
+    """A changed calibration means the module was reflashed.
 
-    return [Change(
-        category="calibration",
-        label="ECU calibration",
-        before=", ".join(old) or "not reported",
-        after=", ".join(new) or "not reported",
-        direction="neutral",
-        note=(
-            "The calibration ID changed, so the module was reflashed between "
-            "these two snapshots. If that was not deliberate, find out who did "
-            "it before trusting anything else here."
-        ),
-    )]
+    Two traps here. Mode 09 can simply fail, leaving an empty list - and an
+    empty list against a populated one is missing data, not a reflash; saying
+    "the module was reflashed" because a read failed sends someone hunting for
+    a tune nobody applied. And a tune can rewrite the contents while keeping
+    the same CALID string, which only the verification numbers reveal, so
+    comparing IDs alone can miss the very change this exists to catch.
+    """
+    old_cal = before.get("calibration") or {}
+    new_cal = after.get("calibration") or {}
+
+    changes: list[Change] = []
+    for key, label, what in (
+        ("calibration_ids", "ECU calibration", "calibration ID"),
+        ("verification_numbers", "Calibration verification", "verification number"),
+    ):
+        old = old_cal.get(key) or []
+        new = new_cal.get(key) or []
+
+        if not old or not new:
+            # One side has nothing to compare against.
+            if old != new:
+                changes.append(Change(
+                    category="calibration",
+                    label=label,
+                    before=", ".join(old) or "not reported",
+                    after=", ".join(new) or "not reported",
+                    direction="neutral",
+                    note=(
+                        f"The {what} was missing from one of these scans, so "
+                        "whether it changed is unknown. Mode 09 not answering "
+                        "is not the same as a reflash."
+                    ),
+                ))
+            continue
+
+        if old == new:
+            continue
+
+        changes.append(Change(
+            category="calibration",
+            label=label,
+            before=", ".join(old),
+            after=", ".join(new),
+            direction="neutral",
+            note=(
+                f"The {what} changed, so the module was reflashed between "
+                "these two snapshots. If that was not deliberate, find out who "
+                "did it before trusting anything else here."
+            ),
+        ))
+    return changes
 
 
 def _compare_codes(before: dict, after: dict) -> list[Change]:
@@ -291,6 +324,36 @@ def _compare_codes(before: dict, after: dict) -> list[Change]:
             note=(
                 "Gone because the fault was fixed, or because the codes were "
                 "cleared - the readiness monitors tell you which."
+            ),
+        ))
+
+    # A code can stay present and still get worse. Pending means the ECU saw
+    # the fault once; stored means it confirmed it on a second drive cycle;
+    # permanent means it will not clear until the monitor passes. Comparing
+    # only which codes are present hides a fault being confirmed, which is
+    # exactly the moment worth knowing about.
+    old_status = {item["code"]: item.get("status")
+                  for item in before.get("codes", [])}
+    new_status = {item["code"]: item.get("status")
+                  for item in after.get("codes", [])}
+
+    rank = {"pending": 0, "stored": 1, "permanent": 2}
+    for code in sorted(set(old_status) & set(new_status)):
+        was, now = old_status[code], new_status[code]
+        if was == now or was is None or now is None:
+            continue
+        changes.append(Change(
+            category="codes",
+            label=f"{code} changed status",
+            before=str(was),
+            after=str(now),
+            direction=("worse" if rank.get(now, 1) > rank.get(was, 1)
+                       else "better"),
+            note=(
+                "A pending code becoming stored means the ECU confirmed the "
+                "fault on another drive cycle."
+                if rank.get(now, 1) > rank.get(was, 1)
+                else "The fault has not recurred since."
             ),
         ))
     return changes
@@ -331,12 +394,20 @@ def _compare_misfires(before: dict, after: dict) -> list[Change]:
 
 
 def _compare_monitors(before: dict, after: dict) -> list[Change]:
-    old = {test["mid"]: test for test in before.get("monitor_tests", [])}
-    new = {test["mid"]: test for test in after.get("monitor_tests", [])}
+    # Key by MID *and* TID: one monitor reports several distinct tests, and
+    # keying on the MID alone keeps only the last of them, so a result that
+    # moved to the edge of its limit under another TID never gets compared.
+    def by_test(payload):
+        return {(test["mid"], test.get("tid")): test
+                for test in payload.get("monitor_tests", [])}
+
+    old = by_test(before)
+    new = by_test(after)
 
     changes = []
-    for mid in sorted(set(old) & set(new)):
-        first, second = old[mid], new[mid]
+    for key in sorted(set(old) & set(new)):
+        mid = key[0]
+        first, second = old[key], new[key]
         if second.get("cylinder") is not None:
             continue        # misfires are reported in full by _compare_misfires
         if first.get("headroom") is None or second.get("headroom") is None:
