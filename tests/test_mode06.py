@@ -89,6 +89,20 @@ def test_headroom_is_clamped():
     assert result.headroom == 1.0
 
 
+def test_headroom_warns_approaching_either_limit():
+    # A test with both a floor and a ceiling can fail at either end. Approaching
+    # the lower bound is just as close to failing as approaching the upper one,
+    # so it must read high too - measuring only distance from the floor (as this
+    # once did) left a value sliding toward raw_min looking perfectly healthy.
+    near_max = mode06.parse_records(record(0xA2, 0x0B, 0x24, 190, 20, 200))[0]
+    near_min = mode06.parse_records(record(0xA2, 0x0B, 0x24, 30, 20, 200))[0]
+    middle = mode06.parse_records(record(0xA2, 0x0B, 0x24, 110, 20, 200))[0]
+    assert near_max.passed is near_min.passed is True
+    assert near_max.headroom == pytest.approx(0.889, abs=0.01)
+    assert near_min.headroom == pytest.approx(0.889, abs=0.01)
+    assert middle.headroom == pytest.approx(0.0)
+
+
 def test_a_minimum_limit_is_respected():
     (result,) = mode06.parse_records(record(0x01, 0x07, 0x24, 5, 20, 200))
     assert result.passed is False

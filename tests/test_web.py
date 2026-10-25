@@ -564,6 +564,67 @@ def test_local_binding_needs_no_token():
         server.server_close()
 
 
+def test_wildcard_bind_advertises_a_reachable_address(monkeypatch):
+    # --host 0.0.0.0 is the documented phone workflow. The printed URL must be an
+    # address the phone can dial, not 127.0.0.1 (which is the phone itself), and
+    # that address must pass Host validation or every request 403s.
+    from cardiag.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_primary_lan_address",
+                        lambda: "192.168.1.50")
+    server, url = serve(host="0.0.0.0", port=0)
+    try:
+        assert "192.168.1.50" in url
+        assert "127.0.0.1" not in url
+        assert "192.168.1.50" in server.allowed_hosts
+        assert f"token={server.token}" in url  # still token-gated
+    finally:
+        server.server_close()
+
+
+def test_wildcard_bind_falls_back_when_there_is_no_route(monkeypatch):
+    from cardiag.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_primary_lan_address", lambda: None)
+    server, url = serve(host="0.0.0.0", port=0)
+    try:
+        assert "127.0.0.1" in url
+    finally:
+        server.server_close()
+
+
+def test_static_shell_loads_without_a_token_but_the_api_stays_gated(monkeypatch):
+    """A remote browser fetches app.js/app.css as plain requests with no token.
+
+    Gating the static shell behind the token left those resource requests 403,
+    so the page never started on a phone. The shell carries no vehicle data, so
+    it loads freely; the token still guards every /api/ route.
+    """
+    from cardiag.web import server as server_module
+
+    # Drop the loopback client out of the local set so the test client is
+    # treated as a remote device - a phone's exact situation - and the token is
+    # enforced for it.
+    monkeypatch.setattr(server_module, "LOCAL_HOSTS", {"localhost", "::1"})
+    server, _ = serve(host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        assert server.token is not None
+        with urllib.request.urlopen(base + "/app.js", timeout=10) as response:
+            assert response.status == 200
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(base + "/api/status", timeout=10)
+        assert excinfo.value.code == 403
+        with urllib.request.urlopen(
+                base + f"/api/status?token={server.token}", timeout=10) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 # ---------------------------------------------------------------------------
 # Mode 06, procedures and baselines over the API
 # ---------------------------------------------------------------------------

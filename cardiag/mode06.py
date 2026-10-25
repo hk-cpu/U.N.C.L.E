@@ -193,18 +193,32 @@ class TestResult:
 
     @property
     def headroom(self) -> float | None:
-        """How much of the allowed band is used, 0..1, or None without limits.
+        """How close this test is to failing, 0..1, or None when unscalable.
 
         Near 1.0 means the monitor is close to failing even though it passes -
         which is the whole point of reading mode 06 rather than waiting for a code.
+
+        A test can fail at either end. When the ECU sets both a min and a max,
+        this measures proximity to whichever bound is nearer, so a value sliding
+        down toward its lower limit raises the same early warning as one climbing
+        toward its upper limit - measuring only the distance from the floor (as
+        this once did) left a test approaching ``raw_min`` reading as healthy. With
+        only an upper limit it measures how much of the band from zero is used;
+        with only a lower limit there is no upper bound to scale against, so it
+        stays None.
         """
+        if self.has_min and self.has_max:
+            span = self.raw_max - self.raw_min
+            if span <= 0:
+                return None
+            nearest = min(self.raw_value - self.raw_min,
+                          self.raw_max - self.raw_value)
+            return max(0.0, min(1.0, 1.0 - nearest / (span / 2)))
         if not self.has_max:
             return None
-        low = self.raw_min if self.has_min else 0
-        span = self.raw_max - low
-        if span <= 0:
+        if self.raw_max <= 0:
             return None
-        return max(0.0, min(1.0, (self.raw_value - low) / span))
+        return max(0.0, min(1.0, self.raw_value / self.raw_max))
 
     def format_value(self) -> str:
         if not self.known_scaling:

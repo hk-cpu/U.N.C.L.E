@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import socket
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -170,13 +171,21 @@ class Handler(BaseHTTPRequestHandler):
         if not self._known_host():
             self._error("unrecognised Host header", HTTPStatus.FORBIDDEN)
             return
-        if not self._authorised(query):
-            self._error("missing or invalid token", HTTPStatus.FORBIDDEN)
-            return
 
         if parsed.path.startswith("/api/"):
+            if not self._authorised(query):
+                self._error("missing or invalid token", HTTPStatus.FORBIDDEN)
+                return
             self._api_get(parsed.path, query)
             return
+
+        # The static shell (index.html, app.js, app.css, the icons) carries no
+        # vehicle data and is the same code shipped in the repo, so it loads
+        # without the token. A remote browser fetches app.js and app.css as plain
+        # resource requests that cannot carry the token header, so gating them too
+        # left the page 403 on every asset and the app never started. The token
+        # still guards every /api/ route, and app.js reads it from the page URL to
+        # authorise those.
         self._static(parsed.path)
 
     do_HEAD = do_GET
@@ -330,6 +339,23 @@ def _list_ports() -> list[dict]:
     ]
 
 
+def _primary_lan_address() -> str | None:
+    """The address a device elsewhere on the network would use to reach us.
+
+    Opening a UDP socket toward a public address makes the OS choose the outbound
+    interface without sending a packet; its local address is the one a phone on
+    the same WiFi reaches. Returns None when there is no usable route.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765,
           service: VehicleService | None = None) -> tuple[CardiagServer, str]:
     """Create the server. Returns it plus the URL to open.
@@ -342,8 +368,19 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     token = None if host in LOCAL_HOSTS else secrets.token_urlsafe(16)
 
     allowed = set(LOCAL_HOSTS) | {host.lower()}
+    shown_host = host
+    if host in ("0.0.0.0", "::"):
+        # Bound to every interface: 127.0.0.1 is reachable only from this
+        # machine, and the Host validator would reject the LAN address a phone
+        # actually dials because only "0.0.0.0" is allowlisted. Advertise - and
+        # accept - the real outbound address so the documented phone workflow
+        # (`--host 0.0.0.0`) works instead of printing a dead URL.
+        lan = _primary_lan_address()
+        shown_host = lan or "127.0.0.1"
+        if lan:
+            allowed.add(lan.lower())
+
     server = CardiagServer((host, port), Handler, service, token, allowed)
-    shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     url = f"http://{shown_host}:{server.server_address[1]}/"
     if token:
         url += f"?token={token}"
