@@ -174,6 +174,22 @@ def test_live_rejects_an_unknown_pid(capsys):
         main(["--sim", "live", "NOT_A_PID", "--duration", "0.1"])
 
 
+def test_live_tune_records_the_channels_a_pull_is_read_from(capsys, tmp_path):
+    target = tmp_path / "pull.csv"
+    code, _ = run(capsys, "--sim", "--sim-profile", "charger", "live", "--tune",
+                  "--duration", "0.5", "--refresh", "0.1", "--log", str(target))
+    assert code == 0
+
+    header = target.read_text().splitlines()[0].split(",")
+    # The channels that make a log analysable as a pull must be present.
+    for channel in ("RPM", "INTAKE_PRESSURE", "THROTTLE_POS", "TIMING_ADVANCE"):
+        assert channel in header
+
+    # And the recorded log is readable by `cardiag pull`.
+    code, out = run(capsys, "pull", str(target))
+    assert code == 0
+
+
 # ---------------------------------------------------------------------------
 # Loggers
 # ---------------------------------------------------------------------------
@@ -285,6 +301,20 @@ def test_calibration_command(capsys):
     code, out = run(capsys, "--sim", "--sim-profile", "charger", "calibration")
     assert code == 0
     assert "68RT0057AA" in out
+    # The ID is explained as the OSID a tuning definition has to match.
+    assert "OSID" in out
+    assert "cardiag bin" in out
+
+
+def test_calibration_identifies_a_chrysler_part_number():
+    from cardiag.cli import _looks_like_chrysler_part, _calibration_match_notes
+
+    assert _looks_like_chrysler_part("04896405AG")
+    assert _looks_like_chrysler_part("P04896405AE")
+    assert not _looks_like_chrysler_part("68RT0057AA")
+    # The Chrysler-specific note only appears for a matching part number.
+    assert any("04896405" in note for note in _calibration_match_notes(["04896405AG"]))
+    assert not any("04896405" in note for note in _calibration_match_notes(["68RT0057AA"]))
 
 
 def test_scan_can_skip_mode_06(capsys):

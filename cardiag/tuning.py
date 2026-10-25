@@ -23,6 +23,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+#: The channels a tuner records to read a pull back: load and timing to see
+#: what the engine did, trims and the commanded ratio to see how it fuelled,
+#: intake and coolant temperature because both move the tune. These are PID
+#: names from :mod:`cardiag.pids`; a car that does not answer one simply leaves
+#: that column blank. Kept here so the CLI logger and the app agree on the set.
+LOG_CHANNELS = (
+    "RPM", "SPEED", "ENGINE_LOAD", "MAF", "INTAKE_PRESSURE", "THROTTLE_POS",
+    "TIMING_ADVANCE", "INTAKE_TEMP", "COOLANT_TEMP",
+    "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1",
+    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2",
+    "COMMANDED_EQUIV_RATIO", "O2_B1S1", "O2_B2S1",
+)
+
 #: Below this many samples a cell is treated as unvisited. One sample in a cell
 #: is an artefact of where the log happened to be polled, not a measurement of
 #: what the engine does there.

@@ -119,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="PIDs to watch (names or hex); default is everything useful")
     live.add_argument("--log", metavar="FILE",
                       help="record samples to a .csv or .db file while watching")
+    live.add_argument("--tune", action="store_true",
+                      help="watch the channels a tuner reads off a pull "
+                           "(pair with --log, then analyse with 'cardiag pull')")
     live.add_argument("--duration", type=float,
                       help="stop after this many seconds")
     live.add_argument("--refresh", type=float, default=0.2,
@@ -570,9 +573,18 @@ def _command_clear(args: argparse.Namespace, session: Session) -> int:
 
 
 def _command_live(args: argparse.Namespace, session: Session) -> int:
+    names = args.pids or None
+    if getattr(args, "tune", False) and not names:
+        # The tuner's channel set, minus any this car does not answer, so the
+        # log that 'cardiag pull' reads back has load, timing and trims in it.
+        supported = {entry.name for entry in session.live_pids()}
+        names = [name for name in tuning_module.LOG_CHANNELS if name in supported]
+        if not names:
+            return _fail("this car did not advertise any of the tuning channels.")
+
     dashboard = Dashboard.for_session(
         session,
-        names=args.pids or None,
+        names=names,
         refresh=args.refresh,
     )
 
@@ -923,7 +935,48 @@ def _command_calibration(args: argparse.Namespace, session: Session) -> int:
         "This identifies the software running in the ECU. Save it with "
         "'cardiag baseline' before you change anything: if it differs later, "
         "the module was reflashed.", indent="  "))
+
+    if ids:
+        print()
+        print(console.heading("Matching a tune to this calibration"))
+        for line in _calibration_match_notes(ids):
+            print(console.wrap(line, indent="  "))
+            print()
     return 0
+
+
+def _calibration_match_notes(ids: list[str]) -> list[str]:
+    """What the calibration ID is for when you go to tune the car.
+
+    Factual and model-specific where it can be, without inventing table maps:
+    the ID here is the OSID a tuning definition has to match, and nothing more
+    is claimed than the ECU reported.
+    """
+    notes = [
+        "The calibration ID above is the OSID — the exact software build in "
+        "your PCM. Any tuning definition has to match it: HP Tuners selects "
+        "its own licensed definitions from it automatically, and a TunerPro "
+        "XDF must be the one written for this OSID. A definition meant for a "
+        "different build reads and writes the wrong addresses and corrupts the "
+        "file, so matching this ID is the first real step of a tune.",
+    ]
+    if any(_looks_like_chrysler_part(code) for code in ids):
+        notes.append(
+            "On a 2006 LX HEMI this is a Chrysler part number (the 04896405 "
+            "family), where the trailing letters are the calibration revision. "
+            "Quote the whole string, suffix included, when you look for a "
+            "matching definition.")
+    notes.append(
+        "cardiag reads and logs; it does not write the calibration. Editing it "
+        "needs a flashing tool (HP Tuners MPVI, a PCM-flash/BDM rig), and "
+        "`cardiag bin` can show the tables of a bin you already have against "
+        "an XDF you supply — read-only.")
+    return notes
+
+
+def _looks_like_chrysler_part(code: str) -> bool:
+    cleaned = code.strip().upper()
+    return cleaned.startswith("04896405") or cleaned.startswith("P04896405")
 
 
 def _open_store(args: argparse.Namespace):
