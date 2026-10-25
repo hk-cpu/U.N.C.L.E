@@ -35,5 +35,20 @@ cardiag pull mypull.csv
 The browser app's **Tuning** tab does the same capture-and-analyse without the
 command line: `cardiag app`, open Tuning, **Start capture**, make the pull.
 
+## `demo.xdf` + `demo.bin`
+
+A **synthetic** calibration — not a real Charger tune, just a 2×3 spark table
+and a rev-limiter constant — so the read-only bin viewer runs with no files of
+your own:
+
+```bash
+cardiag bin examples/demo.bin examples/demo.xdf --list
+cardiag bin examples/demo.bin examples/demo.xdf --table "Spark Advance"
+```
+
+For a real car you supply your own bin (read with a proper flashing tool) and an
+XDF written for its OSID. Regenerate the demo with
+`python tools/make_example_xdf.py`.
+
 Nothing here writes to the car — it reads, records and analyses, which is the
 whole job that surrounds a tune.

@@ -339,6 +339,38 @@ cardiag pull examples/charger-pull.csv
 The browser app's **Tuning** tab does the same capture-and-analyse with no
 command line. None of it writes to the car.
 
+`cardiag live --tune --log pull.csv` records the right channel set in one
+command, instead of listing them by hand.
+
+### Reading a calibration bin
+
+If you already have a full calibration dump (a *bin*, read off the car with a
+proper flashing tool — not an ELM327) and an **XDF** written for that exact
+calibration, `cardiag bin` shows you what is in it — the same read that TunerPro
+does:
+
+```bash
+cardiag bin mycar.bin mycar.xdf --list                 # tables and constants
+cardiag bin mycar.bin mycar.xdf --table "Spark Advance"  # one table
+```
+
+A ready-made synthetic demo ships in [`examples/`](examples/) so the viewer runs
+with no files of your own:
+
+```bash
+cardiag bin examples/demo.bin examples/demo.xdf --list
+```
+
+This is **display only**. It opens both files read-only, decodes values
+big-endian (correct for the PowerPC NGC; `--little-endian` to override) and
+signed per the XDF's own flag, and applies the XDF's scaling equation — and when
+it can't parse an equation or an address runs off the end of the bin, it says so
+rather than inventing a number. It does not edit, checksum, write or flash
+anything, and it does not check the XDF matches the bin's calibration — a
+mismatched XDF reads the wrong addresses, so match the OSID (`cardiag
+calibration`) yourself. You supply both files; cardiag ships neither a real bin
+nor a real XDF.
+
 ### What this does not do
 
 **It does not write calibrations to the ECU.** That is a deliberate limit, not
@@ -482,6 +514,7 @@ skip straight past the guessing.
 | `cardiag live` | Live dashboard |
 | `cardiag live --log drive.csv` | Dashboard plus recording |
 | `cardiag pull mypull.csv` | Analyse a recorded pull — works offline, no car needed |
+| `cardiag bin car.bin car.xdf --list` | View a calibration bin against an XDF — read-only, no car needed |
 | `cardiag canbus` | Bus and wiring map — works offline, no car needed |
 | `cardiag monitors` | Emissions readiness monitors |
 | `cardiag freeze` | Freeze frame from when the fault was stored |

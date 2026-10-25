@@ -13,6 +13,7 @@ from . import mode06
 from . import pids, vehicles, vin as vin_module
 from . import report as report_module
 from . import tuning as tuning_module
+from . import xdf as xdf_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
 from .logger import open_logger
@@ -137,6 +138,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="the channel to bin across RPM and load "
                            "(default: TIMING_ADVANCE)")
 
+    binp = sub.add_parser(
+        "bin", help="view a calibration bin against an XDF, read-only (no car)")
+    binp.add_argument("binfile", help="a calibration bin dump you already have")
+    binp.add_argument("xdf", help="a TunerPro XDF written for this bin's OSID")
+    binp.add_argument("--list", action="store_true", dest="list_tables",
+                      help="list the tables and constants the XDF defines")
+    binp.add_argument("--table", metavar="NAME",
+                      help="show one table or constant by its title")
+    binp.add_argument("--little-endian", action="store_true",
+                      help="decode little-endian (default is big-endian, which "
+                           "is correct for this car's PowerPC NGC)")
+
     listing = sub.add_parser("pids", help="list the PIDs this car supports")
     listing.add_argument("--all", action="store_true",
                          help="list every PID cardiag knows, not just supported ones")
@@ -247,6 +260,8 @@ def _run(argv: list[str] | None) -> int:
         return _command_canbus(args)
     if command == "pull":
         return _command_pull(args)
+    if command == "bin":
+        return _command_bin(args)
     if command in ("ui", "app"):
         # The UI manages its own connection, so it does not take one from here.
         return _command_ui(args, app_window=command == "app")
@@ -1398,6 +1413,152 @@ def _print_table(table) -> None:
         f"  {data['visited']} cell(s) with at least "
         f"{data['min_cell_samples']} samples; · means too few to average.",
         "dim"))
+
+
+def _command_bin(args: argparse.Namespace) -> int:
+    """Display a calibration bin against a user-supplied XDF. Read-only."""
+    try:
+        with open(args.binfile, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        return _fail(f"could not read {args.binfile}: {exc.strerror or exc}")
+    try:
+        with open(args.xdf, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError as exc:
+        return _fail(f"could not read {args.xdf}: {exc.strerror or exc}")
+
+    try:
+        definition = xdf_module.parse_xdf(text)
+    except xdf_module.XdfError as exc:
+        return _fail(str(exc))
+
+    big_endian = not args.little_endian
+
+    if args.table and not args.list_tables:
+        item = definition.find(args.table)
+        if item is None:
+            return _fail(f"no table or constant titled {args.table!r}. "
+                         "Run with --list to see the titles.")
+        try:
+            if isinstance(item, xdf_module.Constant):
+                return _bin_constant(args, definition, item, data, big_endian)
+            return _bin_table(args, definition, item, data, big_endian)
+        except xdf_module.XdfError as exc:
+            return _fail(str(exc))
+
+    return _bin_list(args, definition, data)
+
+
+def _bin_list(args: argparse.Namespace, definition, data: bytes) -> int:
+    tables = definition.tables
+    constants = definition.constants
+
+    if args.json:
+        print(json.dumps({
+            "bin_bytes": len(data),
+            "base_offset": definition.base_offset,
+            "tables": [
+                {"title": t.title, "address": t.z.embedded.address,
+                 "rows": t.z.embedded.rows, "cols": t.z.embedded.cols,
+                 "size_bits": t.z.embedded.size_bits, "units": t.units,
+                 "equation": t.z.scaling.equation}
+                for t in tables],
+            "constants": [
+                {"title": c.title, "address": c.embedded.address,
+                 "size_bits": c.embedded.size_bits, "units": c.units,
+                 "equation": c.scaling.equation}
+                for c in constants],
+        }, indent=2))
+        return 0
+
+    print(console.paint(f"{args.xdf}", "bold"))
+    print(console.paint(f"against {args.binfile} ({len(data)} bytes) — read-only",
+                        "dim"))
+    print()
+    if tables:
+        print(console.heading(f"Tables ({len(tables)})"))
+        print(console.table([
+            (t.title, f"{t.z.embedded.rows}x{t.z.embedded.cols}",
+             f"0x{t.z.embedded.address:X}", f"{t.z.embedded.size_bits}-bit",
+             t.units or "-")
+            for t in tables], headers=("title", "size", "address", "width", "units")))
+        print()
+    if constants:
+        print(console.heading(f"Constants ({len(constants)})"))
+        print(console.table([
+            (c.title, f"0x{c.embedded.address:X}",
+             f"{c.embedded.size_bits}-bit", c.units or "-")
+            for c in constants], headers=("title", "address", "width", "units")))
+        print()
+    print(console.wrap(
+        "Show one with:  cardiag bin <bin> <xdf> --table \"<title>\". Values are "
+        "read from your bin using your XDF; cardiag does not check the XDF "
+        "matches the bin's OSID, and it never writes.", indent="  "))
+    return 0
+
+
+def _bin_header(args: argparse.Namespace, view_or_units: str, big_endian: bool,
+                equation: str, parsed: bool) -> None:
+    order = "big-endian" if big_endian else "little-endian"
+    note = f"decoded {order}, equation '{equation}'"
+    if not parsed:
+        note += " (not understood — showing the raw integer)"
+    print(console.paint(note, "dim"))
+
+
+def _bin_table(args: argparse.Namespace, definition, table, data: bytes,
+               big_endian: bool) -> int:
+    view = xdf_module.view_table(definition, table, data, big_endian)
+
+    if args.json:
+        print(json.dumps(view.to_dict(), indent=2))
+        return 0
+
+    print(console.paint(view.title, "bold")
+          + (f"  ({view.units})" if view.units else ""))
+    _bin_header(args, view.units, big_endian, view.equation, view.equation_parsed)
+    print()
+
+    decimals = table.z.scaling.decimals
+    header = ("load \\ x", *view.x_labels) if len(view.cells) > 1 else \
+        ("x", *view.x_labels)
+    rows = []
+    for iy, row in enumerate(view.cells):
+        label = view.y_labels[iy] if iy < len(view.y_labels) else str(iy)
+        rows.append((label, *[_format_cell(v, decimals) for v in row]))
+    print(console.table(rows, headers=header))
+    return 0
+
+
+def _bin_constant(args: argparse.Namespace, definition, constant, data: bytes,
+                  big_endian: bool) -> int:
+    grid = xdf_module.read_block(definition, constant.embedded, data,
+                                 constant.scaling, big_endian)
+    value = grid[0][0]
+
+    if args.json:
+        print(json.dumps({
+            "title": constant.title, "value": value, "units": constant.units,
+            "equation": constant.scaling.equation,
+            "equation_parsed": constant.scaling.parsable,
+            "byte_order": "big-endian" if big_endian else "little-endian",
+        }, indent=2))
+        return 0
+
+    print(console.paint(constant.title, "bold"))
+    _bin_header(args, constant.units, big_endian, constant.scaling.equation,
+                constant.scaling.parsable)
+    print()
+    rendered = _format_cell(value, constant.scaling.decimals)
+    print(console.table([("value", f"{rendered} {constant.units}".strip())]))
+    return 0
+
+
+def _format_cell(value, decimals: int) -> str:
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.{decimals}f}"
 
 
 def _command_vin(args: argparse.Namespace, session: Session | None) -> int:

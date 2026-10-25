@@ -460,3 +460,59 @@ def test_pull_on_a_log_without_the_channel_says_so(capsys, tmp_path):
     code, out = run(capsys, "pull", str(log))
     assert code == 0
     assert "does not contain TIMING_ADVANCE" in out
+
+
+# ---------------------------------------------------------------------------
+# bin: read-only XDF calibration viewer
+# ---------------------------------------------------------------------------
+
+EXAMPLE_BIN = Path(__file__).resolve().parent.parent / "examples" / "demo.bin"
+EXAMPLE_XDF = Path(__file__).resolve().parent.parent / "examples" / "demo.xdf"
+
+
+def test_bin_lists_the_definitions(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF), "--list")
+    assert code == 0
+    assert "Spark Advance" in out
+    assert "Rev Limiter" in out
+
+
+def test_bin_shows_a_table_with_scaled_values(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Spark Advance")
+    assert code == 0
+    assert "20.0" in out and "16.0" in out        # corners of the scaled table
+    assert "big-endian" in out
+
+
+def test_bin_shows_a_constant(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Rev Limiter")
+    assert code == 0
+    assert "5600" in out
+
+
+def test_bin_json(capsys):
+    code, out = run(capsys, "--json", "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Spark Advance")
+    payload = json.loads(out)
+    assert payload["cells"][0][0] == 20.0
+    assert payload["byte_order"] == "big-endian"
+
+
+def test_bin_unknown_table_fails(capsys):
+    code, _ = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                  "--table", "Nope")
+    assert code == 2
+
+
+def test_bin_missing_file_fails(capsys):
+    code, _ = run(capsys, "bin", "/no/such.bin", str(EXAMPLE_XDF))
+    assert code == 2
+
+
+def test_bin_rejects_a_doctype_xdf(capsys, tmp_path):
+    hostile = tmp_path / "evil.xdf"
+    hostile.write_text('<!DOCTYPE x [<!ENTITY a "b">]><XDFFORMAT></XDFFORMAT>')
+    code, _ = run(capsys, "bin", str(EXAMPLE_BIN), str(hostile))
+    assert code == 2
