@@ -96,6 +96,15 @@ def _worst(severities: list[str]) -> str:
     return "info"
 
 
+def _confirmed(codes: list) -> list:
+    """Codes the ECU has actually confirmed - stored or permanent, not pending.
+
+    A Mode 07 pending code has been seen once and will clear itself if the fault
+    does not recur; calling it "stored" makes a seen-once fault sound confirmed.
+    """
+    return [code for code in codes if code.status != "pending"]
+
+
 def _overall(severities: list[str]) -> str:
     """The verdict for the car as a whole.
 
@@ -285,11 +294,20 @@ def _explain_faults(report: HealthReport) -> Condition:
                          "the cause.",
                          "moderate", evidence)
     if codes:
-        return Condition("Faults", "Stored codes, no light",
-                         f"No warning light, but {len(codes)} code"
-                         f"{'s are' if len(codes) != 1 else ' is'} stored: "
-                         + ", ".join(code.code for code in codes[:3]) + ".",
-                         "moderate", evidence)
+        listed = ", ".join(code.code for code in codes[:3])
+        if _confirmed(codes):
+            return Condition("Faults", "Stored codes, no light",
+                             f"No warning light, but {len(codes)} code"
+                             f"{'s are' if len(codes) != 1 else ' is'} stored: "
+                             + listed + ".",
+                             "moderate", evidence)
+        # Mode 07 only: the ECU has seen the fault once but not confirmed it.
+        return Condition("Faults", "Pending code, no light",
+                         f"No warning light. {len(codes)} pending code"
+                         f"{'s have' if len(codes) != 1 else ' has'} been seen "
+                         f"once but not confirmed: {listed}. A pending code "
+                         "clears itself if the fault does not happen again.",
+                         "advisory", evidence)
     return Condition("Faults", "None stored",
                      "No trouble codes and no warning light.",
                      "good", evidence)
@@ -352,7 +370,7 @@ def _explain_wear(report: HealthReport) -> Condition | None:
     # a code, the monitors are corroborating it, and saying "no code yet" would
     # contradict the fault card sitting next to this one.
     if report.codes:
-        opening = "The monitors back up the stored codes:"
+        opening = "The monitors back up the codes:"
         closing = ""
     else:
         opening = "No code has been set for this yet, but the monitors show it:"
@@ -453,8 +471,10 @@ def _summarise(report: HealthReport, conditions: list[Condition]) -> str:
         return f"{car} is running, but something needs looking at."
     if report.status and report.status.mil_on:
         return f"{car} has its check-engine light on."
-    if report.codes:
+    if _confirmed(report.codes):
         return f"{car} has stored codes but nothing urgent in the live data."
+    if report.codes:
+        return f"{car} has a pending code the ECU has not confirmed yet."
     if worst in ("moderate", "advisory"):
         return f"{car} is broadly healthy, with something worth keeping an eye on."
     return f"{car} looks healthy. Nothing in this scan needs action."

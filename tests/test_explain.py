@@ -61,7 +61,34 @@ def test_wear_does_not_claim_there_is_no_code_when_there_is_one():
     wear = next(item for item in result.conditions if item.topic == "Wear")
 
     assert "No code has been set" not in wear.detail
-    assert "back up the stored codes" in wear.detail
+    assert "back up the codes" in wear.detail
+
+
+def test_a_pending_only_code_is_not_called_stored():
+    """Mode 07 pending codes reach the Assistant too; a seen-once fault must not
+    be presented as a confirmed stored one, in the card or the summary."""
+    from cardiag import dtc
+    from cardiag.report import HealthReport
+    from cardiag.session import VehicleInfo
+
+    vehicle = VehicleInfo(vin=None, ecu_name=None, fuel_type=None,
+                          protocol="CAN", adapter="sim", battery_voltage=12.4)
+
+    def faults_of(status):
+        result = explain.from_report(HealthReport(
+            vehicle=vehicle, status=None, readings={},
+            codes=[dtc.describe("P0302", status=status)]))
+        return result, next(c for c in result.conditions if c.topic == "Faults")
+
+    pending, card = faults_of("pending")
+    assert card.state == "Pending code, no light"
+    assert "not confirmed" in card.detail
+    assert "pending" in pending.summary.lower()
+    assert "stored codes" not in pending.summary
+
+    stored, card = faults_of("stored")
+    assert card.state == "Stored codes, no light"
+    assert "stored codes" in stored.summary
 
 
 def test_a_finding_title_keeps_its_code_capitalised():
