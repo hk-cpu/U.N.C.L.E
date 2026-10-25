@@ -210,6 +210,25 @@ def test_a_forced_protocol_skips_auto_detect():
     assert info.protocol_id == "6"
 
 
+def test_11bit_can_is_addressed_physically_to_the_pcm():
+    # Detection uses the 0x7DF broadcast; real requests must go to the PCM only,
+    # or with headers off another module's reply could be read as PCM data.
+    transport = ScriptedAdapter(working_protocol="6")
+    ELM327(transport).connect(protocol="6")
+    assert "ATSH7E0" in transport.sent
+    assert "ATCRA7E8" in transport.sent
+    # Set after protocol negotiation (which uses the broadcast), not before.
+    assert transport.sent.index("ATSH7E0") > transport.sent.index("ATDPN")
+    assert transport.sent.index("ATSH7E0") < transport.sent.index("ATCRA7E8")
+
+
+def test_non_can_protocol_is_left_at_the_adapter_default():
+    # ATSH/ATCRA are CAN-only; a non-CAN protocol must not be forced into them.
+    transport = ScriptedAdapter(working_protocol="0")
+    ELM327(transport).connect(protocol="0")
+    assert "ATSH7E0" not in transport.sent
+
+
 def test_every_attempt_failing_reports_what_was_tried():
     transport = ScriptedAdapter(working_protocol="nothing works")
     with pytest.raises(ObdError) as excinfo:

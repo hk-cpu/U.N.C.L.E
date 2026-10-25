@@ -117,6 +117,7 @@ class ELM327:
                 )
                 continue
 
+            self._set_pcm_addressing(protocol_id)
             self.info = AdapterInfo(
                 identifier=identifier,
                 protocol=described,
@@ -160,6 +161,26 @@ class ELM327:
         # Drop the echoed command; echo is still on at this point.
         banner = [line for line in banner if line.upper() not in ("ATZ", "ATWS")]
         return banner[-1] if banner else "unknown adapter"
+
+    #: ELM327 protocol numbers that are 11-bit ISO 15765-4 CAN.
+    _CAN_11BIT = ("6", "8")
+
+    def _set_pcm_addressing(self, protocol_id: str) -> None:
+        """Address the powertrain controller directly, not the broadcast.
+
+        Auto-detection talks to the functional address 0x7DF, which every ECU
+        may answer. For the real requests that follow, address the PCM
+        physically (0x7E0) and filter replies to its response (0x7E8): with
+        headers off, another module's answer would otherwise be read as PCM
+        data, and cardiag only ever talks to the PCM anyway. Only 11-bit CAN -
+        what this tool's car uses - is addressed here; other protocols are left
+        at the adapter default. ATCRA is belt-and-braces, so a clone that
+        rejects it still has physical addressing doing the real work.
+        """
+        if protocol_id not in self._CAN_11BIT:
+            return
+        self._at("ATSH7E0")     # transmit header: physical request to the PCM
+        self._at("ATCRA7E8")    # receive filter: keep only the PCM's reply
 
     def _negotiate_protocol(self) -> tuple[str, str]:
         """Force protocol detection with a real request, then ask what it chose."""

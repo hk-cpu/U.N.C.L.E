@@ -1658,7 +1658,12 @@
   /* ---------------------------------------------------------------- boot */
 
   window.addEventListener("beforeunload", () => {
-    if (state.sampling) navigator.sendBeacon?.("/api/live/stop");
+    if (!state.sampling) return;
+    // sendBeacon cannot set headers, so the token rides in the query and the
+    // body is a JSON blob — otherwise the content-type gate rejects it and the
+    // sampler keeps polling the ECU after the tab is gone.
+    const url = "/api/live/stop" + (token ? `?token=${encodeURIComponent(token)}` : "");
+    navigator.sendBeacon?.(url, new Blob(["{}"], { type: "application/json" }));
   });
 
   const VIEWS = ["connect", "assistant", "scan", "gauges", "live", "tuning",

@@ -390,6 +390,18 @@ def test_a_client_that_sends_no_origin_still_works(http):
     assert status == 200
 
 
+def test_live_stop_accepts_a_beacon_shaped_post(http):
+    """beforeunload stops sampling with navigator.sendBeacon, which can send a
+    body and content type but no headers. The beacon sends an application/json
+    blob so it clears the same gate the fetch path uses; if that ever rejects
+    it, the sampler keeps polling the ECU after the tab has gone."""
+    http("/api/connect", {"url": CHARGER})
+    http("/api/live/start", {})
+    status, payload = raw_post(http.base, "/api/live/stop", {}, origin=http.base)
+    assert status == 200
+    assert payload["sampling"] is False
+
+
 def test_reads_are_not_blocked_by_the_origin_check(http):
     """Nothing on GET changes state, so a cross-origin read costs nothing."""
     http("/api/connect", {"url": CHARGER})
