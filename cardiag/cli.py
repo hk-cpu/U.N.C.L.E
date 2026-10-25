@@ -12,6 +12,7 @@ from . import __version__, baseline as baseline_module, canbus, console, dtc, el
 from . import mode06
 from . import pids, vehicles, vin as vin_module
 from . import report as report_module
+from . import tuning as tuning_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
 from .logger import open_logger
@@ -126,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
     read = sub.add_parser("read", help="read specific PIDs once")
     read.add_argument("pids", nargs="+", help="PID names or hex values")
 
+    pull = sub.add_parser(
+        "pull", help="analyse a recorded log the way a tuner reads one (no car)")
+    pull.add_argument("logfile", help="a CSV log, e.g. one from 'live --log'")
+    pull.add_argument("--channel", default="TIMING_ADVANCE",
+                      help="the channel to bin across RPM and load "
+                           "(default: TIMING_ADVANCE)")
+
     listing = sub.add_parser("pids", help="list the PIDs this car supports")
     listing.add_argument("--all", action="store_true",
                          help="list every PID cardiag knows, not just supported ones")
@@ -234,6 +242,8 @@ def _run(argv: list[str] | None) -> int:
         return _command_vehicle(args, session=None)
     if command == "canbus":
         return _command_canbus(args)
+    if command == "pull":
+        return _command_pull(args)
     if command in ("ui", "app"):
         # The UI manages its own connection, so it does not take one from here.
         return _command_ui(args, app_window=command == "app")
@@ -1238,6 +1248,103 @@ def _command_canbus(args: argparse.Namespace) -> int:
                     f"{circuit.location}: {circuit.note}", "dim")))
         print()
     return 0
+
+
+def _command_pull(args: argparse.Namespace) -> int:
+    """Read a recorded log and report what a tuner reads off its pulls."""
+    import csv
+
+    try:
+        with open(args.logfile, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError as exc:
+        return _fail(f"could not read {args.logfile}: {exc.strerror or exc}")
+
+    samples = tuning_module.samples_from_rows(rows)
+    if not samples:
+        return _fail(
+            f"{args.logfile} has no usable samples. A log needs a timestamp "
+            "column and numeric channels - record one with, e.g.,\n"
+            "  cardiag live RPM INTAKE_PRESSURE THROTTLE_POS TIMING_ADVANCE "
+            "--log pull.csv")
+
+    channel = args.channel.strip().upper()
+    table = tuning_module.build_table(samples, channel)
+    pulls = tuning_module.find_pulls(samples)
+
+    if args.json:
+        print(json.dumps({
+            "file": args.logfile,
+            "samples": len(samples),
+            "channel": channel,
+            "table": table.to_dict() if table else None,
+            "pulls": [
+                {
+                    "index": index,
+                    "seconds": round(pull.seconds, 1),
+                    "rpm_range": list(pull.rpm_range) if pull.rpm_range else None,
+                    "observations": [obs.to_dict()
+                                     for obs in tuning_module.analyse_pull(pull)],
+                }
+                for index, pull in enumerate(pulls)
+            ],
+        }, indent=2))
+        return 0
+
+    print(console.paint(f"Pull analysis of {args.logfile}", "bold"))
+    print(console.paint(f"{len(samples)} samples", "dim"))
+    print()
+
+    print(console.heading("Wide-open pulls"))
+    if not pulls:
+        print(console.wrap(
+            "No wide-open pull found. A pull is full throttle with the revs "
+            "climbing for more than a second or so - this log has none."))
+    for index, pull in enumerate(pulls, start=1):
+        low, high = pull.rpm_range or (0, 0)
+        print(f" {console.paint(f'Pull {index}', 'bold')}  "
+              f"{pull.seconds:.1f}s, {low:.0f}-{high:.0f} rpm")
+        for obs in tuning_module.analyse_pull(pull):
+            mark = console.SEVERITY_MARK.get(obs.severity, " -")
+            print(f"   {console.severity(mark, obs.severity)} "
+                  f"{console.paint(obs.topic, 'bold')}: {obs.detail}")
+            for line in obs.evidence:
+                print(console.paint(f"       {line}", "dim"))
+        print()
+
+    print(console.heading(f"{channel} across RPM and load"))
+    if table is None:
+        print(console.wrap(
+            f"This log does not contain {channel}, so there is no table to "
+            "draw - it was not among the recorded channels."))
+    else:
+        _print_table(table)
+    return 0
+
+
+def _print_table(table) -> None:
+    """Render a tuning Table as aligned text, high load at the top."""
+    data = table.to_dict()
+    cells = {(cell["x"], cell["y"]): cell for cell in data["cells"]}
+
+    header = ("load \\ rpm", *data["x_labels"])
+    rows = []
+    for iy in range(len(data["y_labels"]) - 1, -1, -1):
+        row = [data["y_labels"][iy]]
+        for ix in range(len(data["x_labels"])):
+            cell = cells.get((ix, iy))
+            if cell is None:
+                row.append("")
+            elif cell["mean"] is None:
+                row.append("·")           # seen, but too few samples to average
+            else:
+                row.append(f"{cell['mean']:.1f}")
+        rows.append(tuple(row))
+    print(console.table(rows, headers=header))
+    print(console.paint(
+        f"  {data['visited']} cell(s) with at least "
+        f"{data['min_cell_samples']} samples; · means too few to average.",
+        "dim"))
 
 
 def _command_vin(args: argparse.Namespace, session: Session | None) -> int:

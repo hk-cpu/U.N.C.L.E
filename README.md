@@ -311,6 +311,34 @@ cardiag live RPM SPEED --refresh 0.1 --log drive.csv
 The CSV timestamps are Unix epoch seconds to the millisecond, which lines up
 directly against a SavvyCAN or `candump` capture.
 
+### Reading a pull
+
+The logs a tuner actually asks for are wide-open pulls, read point by point.
+Record the channels that matter while you make the run, then analyse the file —
+no connection to the car needed for the second step:
+
+```bash
+cardiag live RPM INTAKE_PRESSURE THROTTLE_POS TIMING_ADVANCE INTAKE_TEMP \
+    LONG_FUEL_TRIM_1 LONG_FUEL_TRIM_2 --log mypull.csv
+cardiag pull mypull.csv
+```
+
+`cardiag pull` finds the wide-open runs in the log and reads each one off:
+timing eased back as the revs climb (the knock-retard signature, without a knock
+PID), intake air heat-soaking across the run, and fuel trims at wide-open
+throttle. It also bins one channel — timing by default — into an RPM × load
+table, the view a tuner works in. `--channel LONG_FUEL_TRIM_1` tables a
+different one; `--json` scripts it.
+
+No car to hand? A ready-made pull ships in [`examples/`](examples/):
+
+```bash
+cardiag pull examples/charger-pull.csv
+```
+
+The browser app's **Tuning** tab does the same capture-and-analyse with no
+command line. None of it writes to the car.
+
 ### What this does not do
 
 **It does not write calibrations to the ECU.** That is a deliberate limit, not
@@ -453,6 +481,8 @@ skip straight past the guessing.
 | `cardiag vin` | Decode and validate the VIN |
 | `cardiag live` | Live dashboard |
 | `cardiag live --log drive.csv` | Dashboard plus recording |
+| `cardiag pull mypull.csv` | Analyse a recorded pull — works offline, no car needed |
+| `cardiag canbus` | Bus and wiring map — works offline, no car needed |
 | `cardiag monitors` | Emissions readiness monitors |
 | `cardiag freeze` | Freeze frame from when the fault was stored |
 | `cardiag read RPM COOLANT_TEMP` | Read specific parameters once |

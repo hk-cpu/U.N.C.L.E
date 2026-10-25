@@ -375,3 +375,58 @@ def test_install_launcher_json(capsys, tmp_path, monkeypatch):
     payload = json.loads(out)
     assert code == 0
     assert payload["path"].endswith((".desktop", ".command", ".bat"))
+
+
+# ---------------------------------------------------------------------------
+# pull: analysing a recorded log off-car
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+EXAMPLE_LOG = Path(__file__).resolve().parent.parent / "examples" / "charger-pull.csv"
+
+
+def test_pull_analyses_the_example_log(capsys):
+    code, out = run(capsys, "pull", str(EXAMPLE_LOG))
+    assert code == 0
+    assert "Pull 1" in out
+    assert "Timing" in out
+    assert "TIMING_ADVANCE across RPM and load" in out
+
+
+def test_pull_json_is_machine_readable(capsys):
+    code, out = run(capsys, "--json", "pull", str(EXAMPLE_LOG))
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["samples"] > 0
+    assert payload["pulls"], "the example log contains a pull"
+    pull = payload["pulls"][0]
+    assert pull["rpm_range"][0] < pull["rpm_range"][1]
+    assert pull["observations"]
+    assert payload["table"]["x_channel"] == "RPM"
+
+
+def test_pull_reports_no_pull_in_a_cruise_log(capsys, tmp_path):
+    log = tmp_path / "cruise.csv"
+    log.write_text(
+        "timestamp,RPM,THROTTLE_POS,INTAKE_PRESSURE,TIMING_ADVANCE\n"
+        + "".join(f"{100 + i * 0.2},2000,18,34,28\n" for i in range(20)))
+    code, out = run(capsys, "pull", str(log))
+    assert code == 0
+    assert "No wide-open pull" in out
+
+
+def test_pull_on_a_missing_file_fails(capsys):
+    code, _ = run(capsys, "pull", "/no/such/log.csv")
+    assert code == 2
+
+
+def test_pull_on_a_log_without_the_channel_says_so(capsys, tmp_path):
+    # The log has a pull but no timing column, so the table is absent, not zeros.
+    log = tmp_path / "notiming.csv"
+    rows = "".join(
+        f"{100 + i * 0.2},{1800 + 180 * i},88,{60 + 2 * i}\n" for i in range(20))
+    log.write_text("timestamp,RPM,THROTTLE_POS,INTAKE_PRESSURE\n" + rows)
+    code, out = run(capsys, "pull", str(log))
+    assert code == 0
+    assert "does not contain TIMING_ADVANCE" in out
