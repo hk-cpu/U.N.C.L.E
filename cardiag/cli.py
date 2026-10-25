@@ -241,6 +241,10 @@ def _run(argv: list[str] | None) -> int:
         return _command_install_launcher(args)
     if command == "fix" and args.profile_object is not None:
         return _command_fix(args, session=None)
+    if command == "baseline" and (args.list_baselines or args.delete is not None):
+        # Listing and deleting touch only the snapshot store, so they must work
+        # with the adapter unplugged - which is when people tidy them up.
+        return _command_baseline(args, session=None)
 
     try:
         url = _connection_url(args)
@@ -916,7 +920,7 @@ def _open_store(args: argparse.Namespace):
     return baseline_module.BaselineStore(getattr(args, "store", None))
 
 
-def _command_baseline(args: argparse.Namespace, session: Session) -> int:
+def _command_baseline(args: argparse.Namespace, session: Session | None) -> int:
     with _open_store(args) as store:
         if args.delete is not None:
             if store.delete(args.delete):

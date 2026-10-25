@@ -254,6 +254,25 @@ def test_cli_empty_list(capsys, tmp_path):
     assert "No snapshots saved yet" in out
 
 
+def test_cli_store_maintenance_never_opens_the_car(capsys, tmp_path, monkeypatch):
+    """--list and --delete only need the store; they must not need an adapter."""
+    from cardiag import cli
+
+    db = str(tmp_path / "b.db")
+    run(capsys, "--sim", "--sim-profile", "charger", "baseline", "x", "--store", db)
+
+    def refuse(_args):
+        raise AssertionError("tried to connect to a car")
+
+    monkeypatch.setattr(cli, "_connection_url", refuse)
+
+    code, out = run(capsys, "baseline", "--list", "--store", db)
+    assert code == 0 and "x" in out
+
+    code, out = run(capsys, "baseline", "--delete", "1", "--store", db)
+    assert code == 0 and "Deleted snapshot #1" in out
+
+
 # ---------------------------------------------------------------------------
 # One store, several cars
 # ---------------------------------------------------------------------------
