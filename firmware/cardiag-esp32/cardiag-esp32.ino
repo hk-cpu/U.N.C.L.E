@@ -103,7 +103,10 @@ static bool obd_query(uint8_t mode, uint8_t pid, bool has_pid,
     size_t len = obd_build_request(mode, pid, has_pid, request);
     obd_isotp_reset(tp);
 
-    if (!can_send(OBD_ID_REQUEST_ALL, request, len)) return false;
+    // Address the powertrain controller directly (0x7E0), not the functional
+    // broadcast (0x7DF) that every module may answer - cardiag only ever talks
+    // to the PCM, and the reply filter already expects 0x7E8.
+    if (!can_send(OBD_ID_REQUEST_PCM, request, len)) return false;
 
     const uint32_t deadline = millis() + REPLY_TIMEOUT_MS;
     while ((int32_t)(millis() - deadline) < 0) {

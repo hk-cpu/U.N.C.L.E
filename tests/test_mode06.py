@@ -238,6 +238,26 @@ def test_a_car_with_unready_monitors_is_not_headlined_as_clean():
     assert not result.codes and not (result.status and result.status.mil_on)
 
 
+def test_a_pending_only_code_is_not_headlined_as_stored():
+    """Mode 07 pending codes reach the report too. With the light off and only a
+    pending code, calling it 'stored' makes a seen-once fault sound confirmed."""
+    from cardiag import dtc, report as report_module
+    from cardiag.session import VehicleInfo
+
+    vehicle = VehicleInfo(vin=None, ecu_name=None, fuel_type=None,
+                          protocol="CAN", adapter="sim", battery_voltage=12.4)
+
+    pending = report_module.HealthReport(
+        vehicle=vehicle, status=None, readings={},
+        codes=[dtc.describe("P0302", status="pending")])
+    assert pending.headline == "No warning light; a pending code is present"
+
+    stored = report_module.HealthReport(
+        vehicle=vehicle, status=None, readings={},
+        codes=[dtc.describe("P0302", status="stored")])
+    assert stored.headline == "No warning light; stored codes present"
+
+
 def test_a_genuinely_clean_car_is_still_headlined_as_clean():
     from cardiag import report as report_module
     from cardiag.session import Session

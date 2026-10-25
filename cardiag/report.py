@@ -99,7 +99,12 @@ class HealthReport:
         if any(finding.severity in ("critical", "serious") for finding in self.findings):
             return "No warning light, but something needs attention"
         if self.codes:
-            return "No warning light; stored codes present"
+            # Mode 07 pending codes land here too. Calling an unconfirmed,
+            # seen-once fault "stored" makes it sound confirmed; only a stored
+            # or permanent code earns that word.
+            confirmed = any(code.status != "pending" for code in self.codes)
+            return ("No warning light; stored codes present" if confirmed
+                    else "No warning light; a pending code is present")
         # Incomplete readiness and developing wear land as "moderate". Falling
         # through to "No faults found" put that headline directly above a list
         # of things to check - the same contradiction explain.py already
