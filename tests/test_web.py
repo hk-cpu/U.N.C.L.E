@@ -5,6 +5,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 
 import pytest
 
@@ -908,3 +909,93 @@ def test_the_monitors_tab_keeps_the_worst_misfire_count(service):
     service._session.monitor_tests = lambda *a, **k: pair
     # Keys are stringified for JSON.
     assert service.monitor_tests()["misfire_counts"]["4"] == 168
+
+
+# ---------------------------------------------------------------------------
+# Tuning: the RPM x load table and pull analysis over the service and the API
+# ---------------------------------------------------------------------------
+
+def _pull_rows(n=20, start=100.0):
+    """A wide-open ramp as time-aligned rows, the way the sampler records them."""
+    rows = []
+    for i in range(n):
+        frac = i / (n - 1)
+        rows.append({
+            "timestamp": start + i * 0.2,
+            "RPM": 1800 + 3400 * frac,
+            "INTAKE_PRESSURE": 60 + 35 * frac,
+            "THROTTLE_POS": 85.0,
+            "TIMING_ADVANCE": 26 - 9 * frac,
+            "INTAKE_TEMP": 40 + 15 * frac,
+        })
+    return rows
+
+
+def test_tuning_sampler_records_time_aligned_rows(service):
+    # The per-channel sparkline deques cannot feed the tuning engine, which reads
+    # RPM, load and timing from the same instant; the sampler keeps whole rows too.
+    service.connect("sim://?profile=charger")
+    service.start_tuning()
+    time.sleep(0.6)
+    service.stop_live()
+
+    assert service._rows, "the sampler recorded no rows"
+    row = service._rows[-1]
+    assert "timestamp" in row
+    assert "RPM" in row
+    assert "INTAKE_PRESSURE" in service._channels
+    assert "TIMING_ADVANCE" in service._channels
+
+
+def test_tuning_table_bins_the_sampled_rows(service):
+    service.connect(CHARGER)
+    service._rows = deque(_pull_rows())
+
+    result = service.tuning_table("TIMING_ADVANCE")
+    assert result["channel"] == "TIMING_ADVANCE"
+    assert result["samples_seen"] == 20
+    table = result["table"]
+    assert table is not None
+    assert table["x_channel"] == "RPM"
+    assert table["y_channel"] == "INTAKE_PRESSURE"
+    assert table["samples"] > 0
+
+
+def test_tuning_table_is_none_when_the_channel_was_not_logged(service):
+    service.connect(CHARGER)
+    service._rows = deque(_pull_rows())
+    # Nothing logged OIL_TEMP, so the table is absent, not a grid of zeros.
+    assert service.tuning_table("OIL_TEMP")["table"] is None
+
+
+def test_tuning_finds_a_pull_and_reads_it_off(service):
+    service.connect(CHARGER)
+    service._rows = deque(_pull_rows())
+
+    result = service.tuning_pulls()
+    assert len(result["pulls"]) == 1
+    pull = result["pulls"][0]
+    assert pull["rpm_range"][0] < pull["rpm_range"][1]
+    assert pull["seconds"] >= 1.5
+    assert pull["observations"]
+
+
+def test_tuning_reports_no_pulls_without_a_wide_open_run(service):
+    service.connect(CHARGER)
+    service._rows = deque({"timestamp": 100 + i * 0.2, "RPM": 2000,
+                           "THROTTLE_POS": 20.0, "INTAKE_PRESSURE": 40}
+                          for i in range(20))
+    assert service.tuning_pulls()["pulls"] == []
+
+
+def test_tuning_endpoints_over_http(http):
+    http("/api/connect", {"url": "sim://?profile=charger"})
+    assert http("/api/tuning/start", {})[0] == 200
+
+    status, table = http("/api/tuning/table")
+    assert status == 200
+    assert "samples_seen" in table and "table" in table
+
+    status, pulls = http("/api/tuning/pulls")
+    assert status == 200
+    assert "pulls" in pulls

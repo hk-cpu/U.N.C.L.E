@@ -14,7 +14,7 @@ from collections import deque
 from typing import Any
 
 from .. import baseline as baseline_module, explain as explain_module, mode06, pids
-from .. import report as report_module, vehicles, vin as vin_module
+from .. import report as report_module, tuning, vehicles, vin as vin_module
 from ..elm327 import ObdError
 from ..session import Reading, Session
 from ..transport import TransportError, describe_url, link_kind, link_label
@@ -44,6 +44,20 @@ GAUGE_CHANNELS = [
 #: The gauge view polls as hard as the adapter allows.
 GAUGE_INTERVAL = 0.05
 
+#: What the tuning view samples - the channels a tuner reads off a pull. MAP is
+#: the load axis, timing is the headline value, the trims and intake temp are
+#: what a pull is really being watched for.
+TUNING_CHANNELS = [
+    "RPM", "INTAKE_PRESSURE", "THROTTLE_POS", "TIMING_ADVANCE", "INTAKE_TEMP",
+    "ENGINE_LOAD", "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1",
+    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2",
+]
+
+#: Time-aligned sample rows kept for tuning analysis. Larger than the sparkline
+#: history because a pull plus its approach, and room for a few pulls to compare,
+#: needs more than the 15 seconds HISTORY holds at the default rate.
+ROW_HISTORY = 600
+
 
 class ServiceError(Exception):
     """Something the user needs to be told about, in plain words."""
@@ -65,6 +79,10 @@ class VehicleService:
         self._channels: list[str] = []
         self._latest: dict[str, dict[str, Any]] = {}
         self._history: dict[str, deque] = {}
+        #: Time-aligned rows ({timestamp, channel: value, ...}) for tuning, kept
+        #: alongside the per-channel sparkline deques because the tuning engine
+        #: reads each moment whole, not one channel's history at a time.
+        self._rows: deque = deque(maxlen=ROW_HISTORY)
         self._sample_count = 0
         self._last_sample_at: float | None = None
         self._interval = SAMPLE_INTERVAL
@@ -345,6 +363,52 @@ class VehicleService:
     def _thresholds(self):
         return self._profile.thresholds if self._profile else vehicles.Thresholds()
 
+    # -- tuning ------------------------------------------------------------
+    def start_tuning(self) -> dict:
+        """Live sampling of the channels a pull is read from."""
+        with self._lock:
+            session = self._require()
+            supported = {entry.name for entry in session.live_pids()}
+            wanted = [name for name in TUNING_CHANNELS if name in supported]
+        return self.start_live(wanted or None)
+
+    def _tuning_samples(self) -> list:
+        with self._lock:
+            rows = list(self._rows)
+        return tuning.samples_from_rows(rows)
+
+    def tuning_table(self, channel: str = "TIMING_ADVANCE") -> dict:
+        """An RPM x MAP table of one channel, binned from the sampled rows.
+
+        ``table`` is None - not an empty grid - when the rows do not carry that
+        channel, so the UI can say "not logged" rather than "never went there".
+        """
+        samples = self._tuning_samples()
+        table = tuning.build_table(samples, channel)
+        return {
+            "channel": channel,
+            "samples_seen": len(samples),
+            "table": table.to_dict() if table else None,
+        }
+
+    def tuning_pulls(self) -> dict:
+        """Wide-open-throttle runs found in the sampled rows, each read off."""
+        samples = self._tuning_samples()
+        pulls = tuning.find_pulls(samples)
+        return {
+            "samples_seen": len(samples),
+            "pulls": [
+                {
+                    "index": index,
+                    "seconds": round(pull.seconds, 1),
+                    "rpm_range": list(pull.rpm_range) if pull.rpm_range else None,
+                    "observations": [o.to_dict()
+                                     for o in tuning.analyse_pull(pull)],
+                }
+                for index, pull in enumerate(pulls)
+            ],
+        }
+
     def calibration(self) -> dict:
         with self._lock:
             return self._require().calibration()
@@ -467,6 +531,7 @@ class VehicleService:
             self._channels = chosen
             self._latest = {}
             self._history = {name: deque(maxlen=HISTORY) for name in chosen}
+            self._rows = deque(maxlen=ROW_HISTORY)
             self._sample_count = 0
 
         if not self._sampling.is_set():
@@ -508,6 +573,7 @@ class VehicleService:
             readings = session.read_many(channels)
 
             now = time.time()
+            row: dict[str, float] = {"timestamp": now}
             for name in channels:
                 reading = readings.get(name)
                 if reading is None:
@@ -523,7 +589,11 @@ class VehicleService:
                 }
                 if numeric is not None:
                     self._history[name].append(numeric)
+                    row[name] = numeric
 
+            # One time-aligned row for the tuning engine, which needs RPM, load
+            # and timing from the same instant rather than three separate deques.
+            self._rows.append(row)
             self._sample_count += 1
             self._last_sample_at = now
 

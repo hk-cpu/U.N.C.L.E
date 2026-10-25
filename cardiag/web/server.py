@@ -255,6 +255,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.service.procedures())
             elif path == "/api/baselines":
                 self._json(self.service.list_baselines())
+            elif path == "/api/tuning/table":
+                channel = (query.get("channel") or ["TIMING_ADVANCE"])[0]
+                self._json(self.service.tuning_table(channel))
+            elif path == "/api/tuning/pulls":
+                self._json(self.service.tuning_pulls())
             else:
                 self._error("no such endpoint", HTTPStatus.NOT_FOUND)
         except ServiceError as exc:
@@ -280,6 +285,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.service.start_live(body.get("channels")))
         elif path == "/api/gauges/start":
             self._json(self.service.start_gauges())
+        elif path == "/api/tuning/start":
+            self._json(self.service.start_tuning())
         elif path == "/api/live/stop":
             self._json(self.service.stop_live())
         elif path == "/api/baselines/save":
