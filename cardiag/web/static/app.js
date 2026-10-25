@@ -133,8 +133,9 @@
     // Sampling only makes sense while its view is on screen.
     if (name !== "assistant" && assistant.watching) stopWatching();
     if (name !== "live" && state.sampling && !gauges.running
-        && !assistant.watching) stopLive();
+        && !assistant.watching && !tuning.running) stopLive();
     if (name !== "gauges" && gauges.running) stopGauges();
+    if (name !== "tuning" && tuning.running) stopTuning();
     if (name === "vehicle") loadVehicle();
     if (name === "baselines") loadBaselines();
   }
@@ -601,6 +602,8 @@
     engine: {},
     dials: {},
   };
+
+  const tuning = { running: false, timer: null };
 
   function svg(tag, attrs) {
     const node = document.createElementNS(SVG_NS, tag);
@@ -1227,6 +1230,203 @@
     }
   }
 
+  /* -------------------------------------------------------------- tuning */
+
+  async function startTuning() {
+    const button = $("tuning-toggle");
+    busy(button, true, "Starting");
+    try {
+      await post("/api/tuning/start", {});
+      tuning.running = true;
+      state.sampling = true;
+      await refreshTuning();
+      tuning.timer = setInterval(refreshTuning, 2000);
+    } catch (exc) {
+      toast(exc.message);
+    } finally {
+      busy(button, false);
+      $("tuning-toggle").textContent = tuning.running ? "Stop capture"
+                                                       : "Start capture";
+    }
+  }
+
+  async function stopTuning() {
+    clearInterval(tuning.timer);
+    tuning.timer = null;
+    if (!tuning.running) return;
+
+    tuning.running = false;
+    state.sampling = false;
+    $("tuning-toggle").textContent = "Start capture";
+    try { await post("/api/live/stop"); } catch { /* already stopped */ }
+    // The captured rows survive the stop, so a last render shows the whole run.
+    await refreshTuning();
+  }
+
+  $("tuning-toggle").addEventListener("click", () => {
+    tuning.running ? stopTuning() : startTuning();
+  });
+  $("tuning-channel").addEventListener("change", () => {
+    if (state.connected) refreshTuning();
+  });
+
+  async function refreshTuning() {
+    const channel = $("tuning-channel").value;
+    try {
+      const [table, pulls] = await Promise.all([
+        get(`/api/tuning/table?channel=${encodeURIComponent(channel)}`),
+        get("/api/tuning/pulls"),
+      ]);
+      renderTuning(table, pulls);
+    } catch (exc) {
+      clear($("tuning-body")).appendChild(alertBox(exc.message));
+    }
+  }
+
+  function renderTuning(tableResult, pullResult) {
+    const body = clear($("tuning-body"));
+    const seen = tableResult.samples_seen || 0;
+    $("tuning-meta").textContent =
+      `${seen} sample${seen === 1 ? "" : "s"}`
+      + (tuning.running ? " · capturing" : "");
+
+    if (!seen) {
+      body.appendChild(el("p", "muted",
+        tuning.running
+          ? "Capturing. Make a wide-open pull and it will appear here."
+          : "Start capture and make a pull to see the table and its analysis."));
+      return;
+    }
+
+    body.appendChild(renderPulls(pullResult));
+    body.appendChild(renderHeatmap(tableResult));
+  }
+
+  const CHANNEL_LABEL = {
+    TIMING_ADVANCE: "timing advance",
+    LONG_FUEL_TRIM_1: "fuel trim, bank 1",
+    LONG_FUEL_TRIM_2: "fuel trim, bank 2",
+    INTAKE_TEMP: "intake air temp",
+  };
+
+  function heatColour(fraction) {
+    // Sequential, single hue: one blue, light to dark by magnitude. The hue is a
+    // CSS token so dark mode gets its own step rather than an inverted light one.
+    const rgb = getComputedStyle(document.documentElement)
+      .getPropertyValue("--heat-rgb").trim() || "42 120 214";
+    const alpha = 0.12 + 0.60 * Math.max(0, Math.min(1, fraction));
+    return `rgb(${rgb} / ${alpha.toFixed(3)})`;
+  }
+
+  function renderHeatmap(result) {
+    const section = el("div", "section");
+    const label = CHANNEL_LABEL[result.channel] || result.channel;
+    section.appendChild(el("h3", null, `${label} across RPM and load`));
+
+    const table = result.table;
+    if (!table) {
+      section.appendChild(el("p", "muted",
+        `This capture doesn't contain ${label} yet — the adapter may not answer `
+        + "that channel, or the sampler hasn't reached it."));
+      return section;
+    }
+
+    const cells = new Map();
+    let lo = Infinity;
+    let hi = -Infinity;
+    table.cells.forEach((cell) => {
+      cells.set(`${cell.x},${cell.y}`, cell);
+      if (cell.mean !== null) { lo = Math.min(lo, cell.mean); hi = Math.max(hi, cell.mean); }
+    });
+    const span = hi - lo;
+
+    const wrap = el("div", "heat-wrap");
+    const grid = el("table", "heat");
+
+    const head = el("tr");
+    head.appendChild(el("th", "heat-axis", "load \\ rpm"));
+    table.x_labels.forEach((xl) => head.appendChild(el("th", null, xl)));
+    grid.appendChild(head);
+
+    // Load axis descends: high load at the top, the way a tuner's table reads.
+    for (let iy = table.y_labels.length - 1; iy >= 0; iy -= 1) {
+      const tr = el("tr");
+      tr.appendChild(el("th", "heat-axis", table.y_labels[iy]));
+      for (let ix = 0; ix < table.x_labels.length; ix += 1) {
+        const cell = cells.get(`${ix},${iy}`);
+        if (!cell) { tr.appendChild(el("td", "heat-empty")); continue; }
+
+        if (cell.mean === null) {
+          const td = el("td", "heat-sparse", "·");
+          td.title = `RPM ${table.x_labels[ix]}, load ${table.y_labels[iy]}: `
+            + `only ${cell.count} sample${cell.count === 1 ? "" : "s"} `
+            + `(needs ${table.min_cell_samples})`;
+          tr.appendChild(td);
+          continue;
+        }
+
+        const td = el("td", "heat-cell", cell.mean.toFixed(1));
+        td.style.background = heatColour(span > 0 ? (cell.mean - lo) / span : 0.5);
+        td.title = `RPM ${table.x_labels[ix]}, load ${table.y_labels[iy]}: `
+          + `${cell.mean.toFixed(1)} (${cell.count} samples, `
+          + `${cell.min.toFixed(1)}–${cell.max.toFixed(1)})`;
+        tr.appendChild(td);
+      }
+      grid.appendChild(tr);
+    }
+
+    wrap.appendChild(grid);
+    section.appendChild(wrap);
+
+    if (hi > lo) {
+      const legend = el("div", "heat-legend");
+      legend.appendChild(el("span", null, `${lo.toFixed(1)}`));
+      legend.appendChild(el("span", "heat-gradient"));
+      legend.appendChild(el("span", null, `${hi.toFixed(1)}`));
+      legend.appendChild(el("span", "muted",
+        `· ${table.visited} cell${table.visited === 1 ? "" : "s"} with enough `
+        + "samples to read"));
+      section.appendChild(legend);
+    }
+    return section;
+  }
+
+  function renderPulls(result) {
+    const section = el("div", "section");
+    section.appendChild(el("h3", null, "Wide-open pulls"));
+
+    const pulls = result.pulls || [];
+    if (!pulls.length) {
+      section.appendChild(el("p", "muted",
+        "No wide-open pull found yet. A pull is full throttle with the revs "
+        + "climbing for more than a second or so."));
+      return section;
+    }
+
+    pulls.forEach((pull) => {
+      const card = el("div", "card card-quiet");
+      const range = pull.rpm_range
+        ? `${Math.round(pull.rpm_range[0])}–${Math.round(pull.rpm_range[1])} rpm`
+        : "rpm unknown";
+      card.appendChild(el("h4", null,
+        `Pull ${pull.index + 1} · ${pull.seconds}s · ${range}`));
+
+      (pull.observations || []).forEach((obs) => {
+        const row = el("div", "obs");
+        const head = el("div", "obs-head");
+        head.appendChild(badge(obs.severity || "info"));
+        head.appendChild(el("span", "obs-topic", obs.topic));
+        row.appendChild(head);
+        row.appendChild(el("p", "obs-detail", obs.detail));
+        (obs.evidence || []).forEach((line) =>
+          row.appendChild(el("p", "obs-evidence", line)));
+        card.appendChild(row);
+      });
+      section.appendChild(card);
+    });
+    return section;
+  }
+
   /* ----------------------------------------------------------- baselines */
 
   async function loadBaselines() {
@@ -1461,8 +1661,8 @@
     if (state.sampling) navigator.sendBeacon?.("/api/live/stop");
   });
 
-  const VIEWS = ["connect", "assistant", "scan", "gauges", "live", "codes",
-                 "tests", "baselines", "vehicle"];
+  const VIEWS = ["connect", "assistant", "scan", "gauges", "live", "tuning",
+                 "codes", "tests", "baselines", "vehicle"];
 
   (async () => {
     await loadPorts();

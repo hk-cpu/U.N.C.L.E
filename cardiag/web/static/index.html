@@ -43,6 +43,7 @@
   <button class="tab" role="tab" data-view="scan" data-needs-car aria-selected="false">Health</button>
   <button class="tab" role="tab" data-view="gauges" data-needs-car aria-selected="false">Gauges</button>
   <button class="tab" role="tab" data-view="live" data-needs-car aria-selected="false">Live</button>
+  <button class="tab" role="tab" data-view="tuning" data-needs-car aria-selected="false">Tuning</button>
   <button class="tab" role="tab" data-view="codes" data-needs-car aria-selected="false">Codes</button>
   <button class="tab" role="tab" data-view="tests" data-needs-car aria-selected="false">Monitors</button>
   <button class="tab" role="tab" data-view="baselines" data-needs-car aria-selected="false">Baselines</button>
@@ -220,6 +221,29 @@
     <div class="tiles" id="live-tiles">
       <p class="muted">Start the live view to watch engine data.</p>
     </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section class="view" id="view-tuning" role="tabpanel">
+    <div class="view-head">
+      <button class="btn btn-primary" id="tuning-toggle" type="button">Start capture</button>
+      <label class="inline-field">show
+        <select id="tuning-channel">
+          <option value="TIMING_ADVANCE">timing advance</option>
+          <option value="LONG_FUEL_TRIM_1">fuel trim, bank 1</option>
+          <option value="LONG_FUEL_TRIM_2">fuel trim, bank 2</option>
+          <option value="INTAKE_TEMP">intake air temp</option>
+        </select>
+      </label>
+      <span class="muted" id="tuning-meta"></span>
+    </div>
+    <p class="muted">
+      Start capture, then make a wide-open pull. This bins what the engine did
+      at each RPM and load point — the way a tuner reads a log — and picks the
+      pull out of it. Nothing is written to the car; a cell needs a few samples
+      before it means anything.
+    </p>
+    <div id="tuning-body"><p class="muted">Start capture to begin.</p></div>
   </section>
 
   <!-- ---------------------------------------------------------------- -->
