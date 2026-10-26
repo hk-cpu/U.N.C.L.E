@@ -15,6 +15,7 @@ from . import report as report_module
 from . import tuning as tuning_module
 from . import xdf as xdf_module
 from . import canframes as canframes_module
+from . import sensors as sensors_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
 from .logger import open_logger
@@ -138,6 +139,21 @@ def build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--channel", default="TIMING_ADVANCE",
                       help="the channel to bin across RPM and load "
                            "(default: TIMING_ADVANCE)")
+
+    sensor = sub.add_parser(
+        "sensor", help="sensor transfer functions for bench testing (no car)")
+    sensor.add_argument("kind", choices=("temp", "injector"),
+                        help="temp: ECT/IAT thermistor; injector: flow and power")
+    sensor.add_argument("--ohms", type=float, help="temp: measured resistance")
+    sensor.add_argument("--celsius", type=float, help="temp: a temperature to look up")
+    sensor.add_argument("--flow", type=float,
+                        help="injector: rated flow lb/hr (default: stock 27.5)")
+    sensor.add_argument("--from-psi", type=float, dest="from_psi",
+                        help="injector: the pressure the flow is rated at (default 43.5)")
+    sensor.add_argument("--psi", type=float,
+                        help="injector: actual rail pressure (default 58)")
+    sensor.add_argument("--duty", type=float, help="injector: max duty cycle (default 0.80)")
+    sensor.add_argument("--bsfc", type=float, help="injector: BSFC (default 0.50)")
 
     framesp = sub.add_parser(
         "frames", help="annotate a raw CAN-C capture against the frame map (no car)")
@@ -270,6 +286,8 @@ def _run(argv: list[str] | None) -> int:
         return _command_canbus(args)
     if command == "pull":
         return _command_pull(args)
+    if command == "sensor":
+        return _command_sensor(args)
     if command == "frames":
         return _command_frames(args)
     if command == "bin":
@@ -1425,6 +1443,74 @@ def _print_table(table) -> None:
         f"  {data['visited']} cell(s) with at least "
         f"{data['min_cell_samples']} samples; · means too few to average.",
         "dim"))
+
+
+def _command_sensor(args: argparse.Namespace) -> int:
+    """Sensor transfer-function lookups for bench testing. Needs no car."""
+    if args.kind == "temp":
+        return _sensor_temp(args)
+    return _sensor_injector(args)
+
+
+def _sensor_temp(args: argparse.Namespace) -> int:
+    if args.ohms is None and args.celsius is None:
+        return _fail("give --ohms (to read a temperature) or --celsius "
+                     "(to get the expected resistance).")
+
+    results = []
+    if args.ohms is not None:
+        look = sensors_module.temp_from_resistance(args.ohms)
+        results.append(("temperature", f"{look.value:.0f} degC "
+                        f"({sensors_module.c_to_f(look.value):.0f} degF)",
+                        look.extrapolated, f"at {args.ohms:g} ohms"))
+    if args.celsius is not None:
+        look = sensors_module.resistance_from_temp(args.celsius)
+        results.append(("resistance", f"{look.value:,.0f} ohms",
+                        look.extrapolated, f"at {args.celsius:g} degC"))
+
+    if args.json:
+        print(json.dumps([
+            {"quantity": q, "value": v, "input": i, "extrapolated": e}
+            for q, v, e, i in results], indent=2))
+        return 0
+
+    print(console.paint("ECT / IAT thermistor (shared NTC curve)", "bold"))
+    print()
+    print(console.table([(q, v + (f"  {i}")) for q, v, _e, i in results]))
+    if any(e for _q, _v, e, _i in results):
+        print()
+        print(console.wrap("One value fell outside the tabulated range, so it is "
+                           "an extrapolation, not a reading off the curve.",
+                           indent="  "))
+    return 0
+
+
+def _sensor_injector(args: argparse.Namespace) -> int:
+    flow_rated = args.flow if args.flow is not None else sensors_module.STOCK_INJECTOR_LBHR
+    from_psi = args.from_psi if args.from_psi is not None else sensors_module.INJECTOR_TEST_PSI
+    psi = args.psi if args.psi is not None else sensors_module.RAIL_PSI
+    duty = args.duty if args.duty is not None else 0.80
+    bsfc = args.bsfc if args.bsfc is not None else 0.50
+
+    flow = sensors_module.injector_flow(flow_rated, from_psi, psi)
+    bhp = sensors_module.max_bhp(flow, duty=duty, bsfc=bsfc)
+
+    if args.json:
+        print(json.dumps({
+            "rated_flow_lbhr": flow_rated, "rated_at_psi": from_psi,
+            "rail_psi": psi, "effective_flow_lbhr": round(flow, 2),
+            "max_bhp": round(bhp, 0), "duty": duty, "bsfc": bsfc,
+        }, indent=2))
+        return 0
+
+    print(console.paint("Fuel injector flow and power", "bold"))
+    print()
+    print(console.table([
+        ("rated", f"{flow_rated:g} lb/hr at {from_psi:g} psi"),
+        ("at rail pressure", f"{flow:.1f} lb/hr at {psi:g} psi"),
+        (f"supports (8 cyl, {duty:.0%} duty, {bsfc:.2f} BSFC)", f"~{bhp:.0f} BHP"),
+    ]))
+    return 0
 
 
 def _command_frames(args: argparse.Namespace) -> int:

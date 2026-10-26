@@ -539,6 +539,7 @@ skip straight past the guessing.
 | `cardiag pull mypull.csv` | Analyse a recorded pull — works offline, no car needed |
 | `cardiag bin car.bin car.xdf --list` | View a calibration bin against an XDF — read-only, no car needed |
 | `cardiag frames capture.log` | Annotate a raw CAN-C sniffer capture — read-only, no car needed |
+| `cardiag sensor temp --ohms 484` | Sensor transfer functions for bench testing — no car needed |
 | `cardiag canbus` | Bus and wiring map — works offline, no car needed |
 | `cardiag monitors` | Emissions readiness monitors |
 | `cardiag freeze` | Freeze frame from when the fault was stored |
