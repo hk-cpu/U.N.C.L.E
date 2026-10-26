@@ -324,11 +324,17 @@ cardiag pull mypull.csv
 ```
 
 `cardiag pull` finds the wide-open runs in the log and reads each one off:
-timing eased back as the revs climb (the knock-retard signature, without a knock
-PID), intake air heat-soaking across the run, and fuel trims at wide-open
-throttle. It also bins one channel — timing by default — into an RPM × load
-table, the view a tuner works in. `--channel LONG_FUEL_TRIM_1` tables a
-different one; `--json` scripts it.
+air/fuel against the safe window (commanded ratio from the car, or a wideband if
+you logged one — never dressed up as measured when it is only commanded), timing
+eased back as the revs climb (the knock-retard signature, without a knock PID),
+intake air heat-soaking across the run, and fuel trims at wide-open throttle. It
+also bins one channel — timing by default — into an RPM × load table, the view a
+tuner works in. `--channel LONG_FUEL_TRIM_1` tables a different one; `--json`
+scripts it.
+
+The air/fuel check uses the safe WOT window for this engine (about 12.2–12.8:1,
+richer being the safe side); it tells you whether a change you made landed in the
+window, which is the point of logging a pull in the first place.
 
 No car to hand? A ready-made pull ships in [`examples/`](examples/):
 

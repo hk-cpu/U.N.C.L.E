@@ -320,3 +320,61 @@ def test_a_pull_through_a_gearshift_is_not_split_in_two():
     pulls = find_pulls(log)
     assert len(pulls) == 1
     assert pulls[0].rpm_range == (1500, 5600)
+
+
+# ---------------------------------------------------------------------------
+# Air/fuel against the safe window (the tuning instrument)
+# ---------------------------------------------------------------------------
+
+def _wot_pull(**channels):
+    """A short wide-open pull carrying the given constant channels."""
+    out = []
+    for i in range(8):
+        frac = i / 7
+        values = {"RPM": 2000 + 3000 * frac, "THROTTLE_POS": 88.0}
+        values.update(channels)
+        out.append(Sample(100 + i * 0.2, values))
+    return Pull(out)
+
+
+def _afr(pull):
+    return next((o for o in analyse_pull(pull) if o.topic == "Air/fuel"), None)
+
+
+def test_commanded_afr_in_the_window_reads_good():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.86))   # ~12.6:1
+    assert obs is not None and obs.severity == "good"
+    assert "12.6:1" in obs.detail
+    # Commanded, not measured: the caveat must be there.
+    assert "commanded" in obs.detail.lower()
+    assert "wideband" in obs.detail.lower()
+
+
+def test_lean_commanded_afr_is_flagged_serious():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.95))   # ~13.9:1
+    assert obs.severity == "serious"
+    assert "lean" in obs.detail.lower()
+
+
+def test_rich_afr_is_only_informational():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.80))   # ~11.7:1
+    assert obs.severity == "info"
+    assert "richer" in obs.detail.lower()
+
+
+def test_a_logged_wideband_is_used_as_the_measurement():
+    obs = _afr(_wot_pull(WIDEBAND_AFR=13.4))
+    assert obs.severity == "serious"                   # 13.4 is lean
+    assert "measured" in obs.detail.lower()
+    # Measured, so the "confirm with a wideband" caveat is absent.
+    assert "wideband is the only way" not in obs.detail
+
+
+def test_a_logged_lambda_is_converted_to_afr():
+    obs = _afr(_wot_pull(WIDEBAND_LAMBDA=0.86))         # measured ~12.6:1
+    assert obs.severity == "good"
+    assert "measured" in obs.detail.lower()
+
+
+def test_no_afr_channel_means_no_afr_observation():
+    assert _afr(_wot_pull(TIMING_ADVANCE=25.0)) is None

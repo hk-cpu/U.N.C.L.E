@@ -64,6 +64,24 @@ MIN_PULL_SECONDS = 1.5
 #: alone cannot tell a run from a stationary rev held at the limiter.
 MIN_PULL_RPM_RISE = 400.0
 
+#: Safe wide-open-throttle air/fuel window for the 5.7 NGC3, from the vehicle's
+#: own tuning reference (PE commanded AFR). These are targets to read a log
+#: against - cardiag reports whether a pull sits in the window; it does not
+#: write anything to the car.
+WOT_AFR_TARGET_LOW = 12.2
+WOT_AFR_TARGET_HIGH = 12.8
+#: Leaner than this at wide-open throttle is detonation territory on a naturally
+#: aspirated engine, the more so in heat.
+WOT_AFR_LEAN_LIMIT = 13.0
+#: Lambda 1.0 for pump gasoline, to turn an equivalence ratio into an AFR.
+STOICH_GASOLINE = 14.64
+
+#: Column names an external wideband might be logged under (AFR directly, then
+#: lambda). The car's own narrowband O2 is deliberately not used for this: it
+#: saturates rich at WOT and says nothing in the region a pull lives in.
+WIDEBAND_AFR_CHANNELS = ("WIDEBAND_AFR", "WBAFR", "AFR")
+WIDEBAND_LAMBDA_CHANNELS = ("WIDEBAND_LAMBDA", "WBLAMBDA", "LAMBDA")
+
 
 # ---------------------------------------------------------------------------
 # Samples
@@ -366,10 +384,76 @@ def analyse_pull(pull: Pull) -> list[Observation]:
             [f"{len(pull.samples)} samples"],
         ))
 
+    found.extend(_observe_afr(pull))
     found.extend(_observe_timing(pull))
     found.extend(_observe_intake_temp(pull))
     found.extend(_observe_trims(pull))
     return found
+
+
+def _mean_series(pull: Pull, channel: str) -> float | None:
+    series = pull.series(channel)
+    if len(series) < 3:
+        return None
+    values = [value for _, value in series]
+    return sum(values) / len(values)
+
+
+def _wideband_afr(pull: Pull) -> float | None:
+    """A logged wideband's mean AFR across the pull, if one is present."""
+    for name in WIDEBAND_AFR_CHANNELS:
+        mean = _mean_series(pull, name)
+        if mean is not None:
+            return mean
+    for name in WIDEBAND_LAMBDA_CHANNELS:
+        mean = _mean_series(pull, name)
+        if mean is not None:
+            return mean * STOICH_GASOLINE
+    return None
+
+
+def _observe_afr(pull: Pull) -> list[Observation]:
+    """Air/fuel at wide-open throttle, read against the safe window.
+
+    A wideband, if it was logged, is the measurement. Otherwise the ECU's
+    commanded ratio (COMMANDED_EQUIV_RATIO) is reported as exactly what it is -
+    a target the car is aiming for, not a measurement of what it achieved - so a
+    reading is never dressed up as more than the log supports.
+    """
+    measured = _wideband_afr(pull)
+    if measured is not None:
+        afr, kind = measured, "measured"
+    else:
+        lam = _mean_series(pull, "COMMANDED_EQUIV_RATIO")
+        if lam is None:
+            return []
+        afr, kind = lam * STOICH_GASOLINE, "commanded"
+
+    window = f"{WOT_AFR_TARGET_LOW:.1f}-{WOT_AFR_TARGET_HIGH:.1f}:1"
+    evidence = [f"{kind} {afr:.1f}:1 at WOT", f"safe window {window}"]
+    unverified = ("" if kind == "measured" else " That is what the ECU is "
+                  "targeting, not what it burned - a wideband is the only way to "
+                  "confirm it.")
+
+    if afr >= WOT_AFR_LEAN_LIMIT:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR at wide-open throttle is "
+            f"{afr:.1f}:1, leaner than the {window} safe window. Lean at WOT is "
+            "detonation territory, the more so in the heat; the safe direction is "
+            "more fuel." + unverified, "serious", evidence)]
+    if afr > WOT_AFR_TARGET_HIGH:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, a little lean of "
+            f"the {window} window. A touch more fuel is the safe way to move it."
+            + unverified, "advisory", evidence)]
+    if afr >= WOT_AFR_TARGET_LOW:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, inside the "
+            f"{window} safe window." + unverified, "good", evidence)]
+    return [Observation(
+        "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, richer than the "
+        f"{window} window - safe, but leaving a little power on the table."
+        + unverified, "info", evidence)]
 
 
 def _observe_timing(pull: Pull) -> list[Observation]:
