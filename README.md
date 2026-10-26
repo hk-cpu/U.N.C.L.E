@@ -311,6 +311,23 @@ cardiag live RPM SPEED --refresh 0.1 --log drive.csv
 The CSV timestamps are Unix epoch seconds to the millisecond, which lines up
 directly against a SavvyCAN or `candump` capture.
 
+`cardiag frames` is the other half of that: point it at the raw capture and it
+labels the broadcast frames it recognises — which ID is the 75 Hz engine frame,
+which carry wheel speeds, brake pressure, steering — and shows the raw bytes at
+the positions those signals are observed at:
+
+```bash
+cardiag frames capture.log              # summary: which frames, how often
+cardiag frames capture.log --id 0x312   # one frame over time, raw
+cardiag frames --list                   # the frame map, no capture needed
+```
+
+It is read-only and honest about its limits: the map is reverse-engineered, so
+it shows raw values at documented byte positions and names what each is observed
+to track, but it does not invent a scale factor it can't back. You find the
+scale by correlating against a diagnostic reading — which is exactly why the two
+commands share a timestamp format.
+
 ### Reading a pull
 
 The logs a tuner actually asks for are wide-open pulls, read point by point.
@@ -521,6 +538,7 @@ skip straight past the guessing.
 | `cardiag live --log drive.csv` | Dashboard plus recording |
 | `cardiag pull mypull.csv` | Analyse a recorded pull — works offline, no car needed |
 | `cardiag bin car.bin car.xdf --list` | View a calibration bin against an XDF — read-only, no car needed |
+| `cardiag frames capture.log` | Annotate a raw CAN-C sniffer capture — read-only, no car needed |
 | `cardiag canbus` | Bus and wiring map — works offline, no car needed |
 | `cardiag monitors` | Emissions readiness monitors |
 | `cardiag freeze` | Freeze frame from when the fault was stored |

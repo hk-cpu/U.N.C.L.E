@@ -516,3 +516,71 @@ def test_bin_rejects_a_doctype_xdf(capsys, tmp_path):
     hostile.write_text('<!DOCTYPE x [<!ENTITY a "b">]><XDFFORMAT></XDFFORMAT>')
     code, _ = run(capsys, "bin", str(EXAMPLE_BIN), str(hostile))
     assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# frames: annotating a raw CAN-C capture (no car)
+# ---------------------------------------------------------------------------
+
+CANDUMP = (
+    "(1703001000.000000) can0 312#0ABB11223344FF00\n"
+    "(1703001000.013000) can0 200#000012340000ABCD\n"
+    "(1703001000.026000) can0 312#0AC011223344FF00\n"
+    "(1703001000.039000) can0 210#00005500000000AA\n"
+    "(1703001000.052000) can0 999#DEADBEEF\n"
+    "(1703001000.065000) can0 312#0AD511223344FF00\n"
+)
+
+
+def test_frames_list(capsys):
+    code, out = run(capsys, "frames", "--list")
+    assert code == 0
+    assert "Engine data" in out
+    assert "Brake pressure" in out
+
+
+def test_frames_summary_groups_and_flags_unknown(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "frames", str(cap))
+    assert code == 0
+    assert "0x312" in out and "Engine data" in out
+    assert "0x999" in out and "unknown" in out
+    assert "not in the frame map" in out
+
+
+def test_frames_one_id_shows_raw_only(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "frames", str(cap), "--id", "0x312")
+    assert code == 0
+    assert "0abb11223344ff00" in out
+    assert "no scaling is applied" in out
+
+
+def test_frames_json(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "--json", "frames", str(cap))
+    payload = json.loads(out)
+    assert payload["total_frames"] == 6
+    ids = {row["id"]: row for row in payload["ids"]}
+    assert ids["0x312"]["count"] == 3
+    assert ids["0x999"]["known"] is False
+
+
+def test_frames_parses_savvycan_csv(capsys, tmp_path):
+    cap = tmp_path / "cap.csv"
+    cap.write_text(
+        "Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n"
+        "0.0,0x210,false,Rx,0,8,00,00,55,00,00,00,00,AA\n")
+    code, out = run(capsys, "frames", str(cap))
+    assert code == 0
+    assert "Brake pressure" in out
+
+
+def test_frames_on_an_empty_capture_fails(capsys, tmp_path):
+    cap = tmp_path / "empty.log"
+    cap.write_text("nothing to see here\n")
+    code, _ = run(capsys, "frames", str(cap))
+    assert code == 2
