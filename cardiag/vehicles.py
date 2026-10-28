@@ -224,6 +224,13 @@ CHARGER_RT_2006 = VehicleProfile(
         "Bank 1 is the driver's side on this engine (cylinders 1, 3, 5, 7). "
         "Bank 2 is the passenger's side (2, 4, 6, 8).",
         "Firing order is 1-8-4-3-6-5-7-2.",
+        "MDS only drops to four cylinders once the engine has satisfied every "
+        "enabling condition at once: light engine load, 1200-3000 rpm, 12-90 "
+        "mph, battery 9.0-15.0 V, oil pressure 15-147 psi, oil temperature above "
+        "120 degF (49 degC), coolant 158-248 degF (70-120 degC), ambient "
+        "14-248 degF, and no active throttle-position or MDS fault codes. If any "
+        "one is out of range it stays on all eight - so 'my MDS never kicks in' "
+        "is usually a sensor reading out of that window, not a broken solenoid.",
     ),
     known_issues=(
         KnownIssue(
@@ -290,6 +297,55 @@ CHARGER_RT_2006 = VehicleProfile(
                 ),
             ),
             severity="serious",
+        ),
+        KnownIssue(
+            title="MDS solenoid or rationality fault",
+            key="mds-rationality",
+            detail=(
+                "Separate from the lifter failure above, and about the "
+                "electrical/hydraulic side of MDS rather than the camshaft. The "
+                "MDS solenoids (one per deactivated cylinder - 1, 4, 6, 7) switch "
+                "oil to collapse those lifters. A solenoid that sticks, or valves "
+                "that keep cycling on a cylinder the PCM meant to shut off, pumps "
+                "air through that cylinder without burning fuel. The upstream "
+                "oxygen sensor on that bank then reads lean, so the PCM can set a "
+                "cylinder-deactivation rationality code (P3400 on bank 1) or a "
+                "P34xx solenoid-circuit code naming cylinder 1, 4, 6 or 7. On "
+                "this engine a P3400 with a lean bank, and no mechanical tick, "
+                "points here rather than at a collapsed lifter."
+            ),
+            code_prefixes=("P34",),
+            codes=("P3400",),
+            checks=(
+                "Confirm which cylinder the P34xx code names - it should be one "
+                "of the MDS four (1, 4, 6, 7).",
+                "Check for a lean code or lean fuel trim on the same bank; the "
+                "rationality fault shows up as unexplained extra oxygen.",
+                "Rule out the mechanical lifter failure first: a steady warm tick "
+                "and metal in the oil point there, not at the solenoid.",
+            ),
+            procedure=(
+                Step(
+                    action="Read the stored codes and note every P34xx and any "
+                           "lean code (P0171/P0174) that came with it.",
+                    expect="A P3400 or P34xx solenoid code alongside a lean bank, "
+                           "with no misfire and no tick, is the solenoid/"
+                           "rationality picture rather than a wiped lobe.",
+                ),
+                Step(
+                    action="With the engine warm and the MDS enabling conditions "
+                           "met (light load, 1200-3000 rpm, 12-90 mph), watch the "
+                           "fuel trims on each bank.",
+                    expect="A bank that swings lean only when MDS should be "
+                           "engaging points at a solenoid not sealing on one of "
+                           "its cylinders.",
+                    watch=("SHORT_FUEL_TRIM_1", "SHORT_FUEL_TRIM_2", "RPM",
+                           "SPEED"),
+                    caution="Watch the road, not the screen - have someone else "
+                            "read the trims, or log and review afterwards.",
+                ),
+            ),
+            severity="moderate",
         ),
         KnownIssue(
             title="Broken exhaust manifold bolts",
@@ -447,6 +503,12 @@ CHARGER_RT_2006 = VehicleProfile(
         "P0304": "Cylinder 4 is an MDS cylinder - see the MDS lifter issue below.",
         "P0306": "Cylinder 6 is an MDS cylinder - see the MDS lifter issue below.",
         "P0307": "Cylinder 7 is an MDS cylinder - see the MDS lifter issue below.",
+        "P3400": "Cylinder-deactivation (MDS) system, bank 1. On this engine it "
+                 "usually comes with a lean reading on that bank: a solenoid that "
+                 "will not seal, or valves still cycling on a cylinder that should "
+                 "be shut off, pump air past the oxygen sensor. Check it against "
+                 "the lifter failure - no tick and no metal in the oil points at "
+                 "the solenoid side, not the camshaft.",
         "P0171": "Bank 1 is the driver's side. On this engine a lean bank is very "
                  "often a cracked or leaking exhaust manifold rather than a "
                  "vacuum leak.",

@@ -65,3 +65,27 @@ def test_the_engine_frame_carries_no_decoded_signal():
     assert frame is not None
     assert frame.signals == ()
     assert "correlate" in frame.note.lower()
+
+
+def test_byte_attributed_frames_are_present_and_observed():
+    # Frames the source attributed to specific bytes are carried; the many bare
+    # cyclic frames it could only time are still left out.
+    for can_id in (0x328, 0x3D0, 0x3FF, 0x445, 0x608):
+        frame = canframes.get(can_id)
+        assert frame is not None, f"0x{can_id:03X} missing"
+        assert frame.signals, f"0x{can_id:03X} should carry a byte attribution"
+        # None were matched to a reference trace, so none may claim MATCHED.
+        assert frame.confidence == canframes.OBSERVED
+
+
+def test_bare_cyclic_frames_stay_out_of_the_map():
+    # e.g. 0x358 was only timed ("~37.3 Hz cyclic frame"), never attributed, so
+    # listing it would imply knowledge the source does not have.
+    assert canframes.get(0x358) is None
+    assert canframes.get(0x3FB) is None
+
+
+def test_the_multi_byte_dynamic_frame_reads_each_attributed_byte():
+    ann = canframes.annotate(0x608, bytes([0x11, 0, 0, 0, 0, 0x55, 0x66, 0]))
+    raws = {(r.start_byte, r.raw) for r in ann.readings}
+    assert raws == {(0, 0x11), (5, 0x55), (6, 0x66)}

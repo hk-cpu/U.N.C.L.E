@@ -111,12 +111,43 @@ _FRAMES: tuple[BroadcastFrame, ...] = (
     BroadcastFrame(0x315, "Powertrain / chassis", 50.0, 6, OBSERVED),
     BroadcastFrame(0x325, "Powertrain / chassis", 50.0, 7, OBSERVED),
     BroadcastFrame(
+        0x328, "Chassis / dynamic", 37.4, 8, OBSERVED,
+        (Signal("dynamic", 2, 1, note="byte 2 seen changing; scale unknown"),)),
+    BroadcastFrame(
         0x338, "Speed & steering / yaw", 37.5, 8, MATCHED,
         (Signal("speed", 0, 2),
          Signal("steering_or_yaw", 6, 2, signed=True))),
     BroadcastFrame(
+        0x3D0, "Dynamic status (independent)", 7.5, 4, OBSERVED,
+        (Signal("dynamic", 0, 1), Signal("dynamic", 1, 1)),
+        "Two independent single-byte signals; not characterised further."),
+    BroadcastFrame(
         0x3E4, "Distance / odometer", 1.0, 3, MATCHED,
         (Signal("distance", 1, 2, note="odometer-like counter"),)),
+    BroadcastFrame(
+        0x3E6, "Status flag", 2.0, 1, OBSERVED,
+        (Signal("status_flag", 0, 1),)),
+    BroadcastFrame(
+        0x3FF, "Dynamic status", 20.0, 6, OBSERVED,
+        (Signal("dynamic", 0, 1),)),
+    BroadcastFrame(
+        0x408, "Dynamic status (low-res)", 10.0, 8, OBSERVED,
+        (Signal("dynamic", 1, 1, note="low-resolution"),)),
+    BroadcastFrame(
+        0x410, "Dynamic status (low-res)", 50.0, 8, OBSERVED,
+        (Signal("dynamic", 1, 1, note="low-resolution"),)),
+    BroadcastFrame(
+        0x415, "Dynamic status", 7.5, 7, OBSERVED,
+        (Signal("dynamic", 1, 1),)),
+    BroadcastFrame(
+        0x445, "Level sensor (fuel / suspension)", 16.7, 6, OBSERVED,
+        (Signal("level", 0, 1,
+                note="named by the source as a level-sensor-like signal; "
+                     "which level and the scale are unconfirmed"),)),
+    BroadcastFrame(
+        0x608, "Dynamic status (multi-byte)", 7.5, 8, OBSERVED,
+        (Signal("dynamic", 0, 1), Signal("dynamic", 5, 1),
+         Signal("dynamic", 6, 1))),
 )
 
 BY_ID: dict[int, BroadcastFrame] = {frame.can_id: frame for frame in _FRAMES}

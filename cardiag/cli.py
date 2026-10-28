@@ -1301,6 +1301,18 @@ def _command_canbus(args: argparse.Namespace) -> int:
                 for c in canbus.circuits(category)
             ],
         }
+        if category is None:
+            payload["grounds"] = [
+                {"name": g.name, "location": g.location, "serves": g.serves,
+                 "note": g.note}
+                for g in canbus.grounds()
+            ]
+            payload["ground_spec"] = canbus.GROUND_SPEC
+            payload["fuses"] = [
+                {"panel": f.panel, "position": f.position, "rating": f.rating,
+                 "feeds": f.feeds, "circuit": f.circuit, "note": f.note}
+                for f in canbus.fuses()
+            ]
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -1345,6 +1357,31 @@ def _command_canbus(args: argparse.Namespace) -> int:
                 print(console.wrap(console.paint(
                     f"{circuit.location}: {circuit.note}", "dim")))
         print()
+
+    if category is None:
+        print(console.heading("Chassis grounding points (G100-G304)"))
+        rows = [(g.name, g.location, g.serves) for g in canbus.grounds()]
+        print(console.table(rows, headers=("point", "where", "shares it with")))
+        for g in canbus.grounds():
+            if g.note:
+                print(console.wrap(console.paint(f"{g.name}: {g.note}", "dim")))
+        print(console.wrap(console.paint(
+            f"A healthy module ground measures {canbus.GROUND_SPEC}.", "dim")))
+        print()
+
+        print(console.heading("Key fuses (powertrain & diagnostic feeds)"))
+        for panel in (canbus.IPM, canbus.PDC):
+            panel_fuses = canbus.fuses(panel)
+            if not panel_fuses:
+                continue
+            print(f" {console.paint(panel, 'bold')}")
+            rows = [(f.position, f.rating, f.feeds) for f in panel_fuses]
+            print(console.table(rows, headers=("fuse", "rating", "feeds")))
+            for f in panel_fuses:
+                if f.note:
+                    print(console.wrap(console.paint(
+                        f"{f.position}: {f.note}", "dim")))
+            print()
     return 0
 
 
