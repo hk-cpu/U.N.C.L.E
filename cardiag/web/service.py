@@ -13,8 +13,9 @@ import time
 from collections import deque
 from typing import Any
 
-from .. import baseline as baseline_module, explain as explain_module, mode06, pids
-from .. import report as report_module, tuning, vehicles, vin as vin_module
+from .. import baseline as baseline_module, canbus, explain as explain_module
+from .. import mode06, pids, report as report_module, tuning
+from .. import vehicles, vin as vin_module
 from ..elm327 import ObdError
 from ..session import Reading, Session
 from ..transport import TransportError, describe_url, link_kind, link_label
@@ -494,6 +495,10 @@ class VehicleService:
         return {
             "profile": self._profile.to_dict() if self._profile else None,
             "vin": decoded,
+            # The read-only wiring/bus map, so the Vehicle tab can show which
+            # physical circuit a reading comes from. It is reference data, not
+            # tied to the connected car, so it is always available.
+            "canbus": canbus.as_dict(),
         }
 
     def available_channels(self) -> list[dict]:
@@ -619,6 +624,9 @@ class VehicleService:
                     "severity": _channel_severity(
                         name, latest["value"] if latest else None,
                         self._profile.thresholds if self._profile else None),
+                    # The wire this reading comes off, where cardiag knows it,
+                    # so a value that looks wrong can be traced to a circuit.
+                    "circuit": canbus.circuit_ref(name),
                 })
             return {
                 "sampling": self._sampling.is_set(),

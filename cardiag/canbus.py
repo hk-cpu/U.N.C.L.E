@@ -402,3 +402,65 @@ def fuses_for_circuit(circuit_name: str) -> list[Fuse]:
     """Fuses tied to a named PCM harness circuit, where the two line up."""
     name = circuit_name.strip().upper()
     return [f for f in FUSES if f.circuit.upper() == name]
+
+
+# ---------------------------------------------------------------------------
+# Serialisation (shared by the CLI's --json and the web Vehicle tab)
+# ---------------------------------------------------------------------------
+
+def circuit_ref(pid_name: str) -> dict | None:
+    """A compact reference to the wire a live PID is read from, or None.
+
+    Small on purpose: just enough for a reading in the UI to point at the
+    physical circuit it comes from, so a value that looks wrong can be chased
+    to a wire and connector pin.
+    """
+    circuit = for_pid(pid_name)
+    if circuit is None:
+        return None
+    return {
+        "circuit": circuit.circuit,
+        "location": circuit.location,
+        "color": circuit.color,
+        "function": circuit.function,
+    }
+
+
+def as_dict(category: str | None = None) -> dict:
+    """The whole reference as plain data. ``category`` filters the circuits.
+
+    Grounds and fuses belong to the full map, so they are included only when no
+    category filter is applied - the same rule the printed view follows.
+    """
+    data: dict = {
+        "diag_request_id": DIAG_REQUEST_ID,
+        "diag_response_id": DIAG_RESPONSE_ID,
+        "buses": [
+            {"name": b.name, "speed_kbps": b.speed_kbps, "standard": b.standard,
+             "where": b.where, "access": b.access}
+            for b in BUSES
+        ],
+        "dlc_pins": [
+            {"pin": p.pin, "function": p.function, "note": p.note}
+            for p in DLC_PINS
+        ],
+        "circuits": [
+            {"circuit": c.circuit, "connector": c.connector, "pin": c.pin,
+             "location": c.location, "color": c.color, "function": c.function,
+             "category": c.category, "pid": c.pid, "note": c.note}
+            for c in circuits(category)
+        ],
+    }
+    if category is None:
+        data["grounds"] = [
+            {"name": g.name, "location": g.location, "serves": g.serves,
+             "note": g.note}
+            for g in GROUNDS
+        ]
+        data["ground_spec"] = GROUND_SPEC
+        data["fuses"] = [
+            {"panel": f.panel, "position": f.position, "rating": f.rating,
+             "feeds": f.feeds, "circuit": f.circuit, "note": f.note}
+            for f in FUSES
+        ]
+    return data

@@ -139,6 +139,32 @@ def test_live_flags_a_lean_bank(service):
     service.stop_live()
 
 
+def test_vehicle_carries_the_wiring_map(service):
+    service.connect(CHARGER)
+    cb = service.vehicle()["canbus"]
+    # The map is reference data, available whatever car is connected.
+    assert cb["diag_request_id"] == 0x7E0
+    assert any(c["pid"] == "COOLANT_TEMP" for c in cb["circuits"])
+    assert any(g["name"] == "G102" for g in cb["grounds"])
+    assert any(f["position"] == "Fuse 11" for f in cb["fuses"])
+
+
+def test_live_readings_name_their_circuit(service):
+    service.connect(CHARGER)
+    service.start_live(["COOLANT_TEMP", "RPM"])
+    try:
+        channels = {c["name"]: c for c in service.live_snapshot()["channels"]}
+        # A sensor channel links to the wire it is read off...
+        ect = channels["COOLANT_TEMP"]["circuit"]
+        assert ect is not None
+        assert ect["circuit"] == "K2"
+        assert ect["location"] == "C2 pin 20"
+        # ...while a channel with no curated circuit simply has none.
+        assert channels["RPM"]["circuit"] is None
+    finally:
+        service.stop_live()
+
+
 def test_the_assistant_explains_a_scan(service):
     service.connect(CHARGER)
     payload = service.explain()

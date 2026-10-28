@@ -1282,38 +1282,7 @@ def _command_canbus(args: argparse.Namespace) -> int:
     category = getattr(args, "category", None)
 
     if args.json:
-        payload = {
-            "diag_request_id": canbus.DIAG_REQUEST_ID,
-            "diag_response_id": canbus.DIAG_RESPONSE_ID,
-            "buses": [
-                {"name": b.name, "speed_kbps": b.speed_kbps,
-                 "standard": b.standard, "where": b.where, "access": b.access}
-                for b in canbus.BUSES
-            ],
-            "dlc_pins": [
-                {"pin": p.pin, "function": p.function, "note": p.note}
-                for p in canbus.DLC_PINS
-            ],
-            "circuits": [
-                {"circuit": c.circuit, "connector": c.connector, "pin": c.pin,
-                 "color": c.color, "function": c.function,
-                 "category": c.category, "pid": c.pid, "note": c.note}
-                for c in canbus.circuits(category)
-            ],
-        }
-        if category is None:
-            payload["grounds"] = [
-                {"name": g.name, "location": g.location, "serves": g.serves,
-                 "note": g.note}
-                for g in canbus.grounds()
-            ]
-            payload["ground_spec"] = canbus.GROUND_SPEC
-            payload["fuses"] = [
-                {"panel": f.panel, "position": f.position, "rating": f.rating,
-                 "feeds": f.feeds, "circuit": f.circuit, "note": f.note}
-                for f in canbus.fuses()
-            ]
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(canbus.as_dict(category), indent=2))
         return 0
 
     print(console.paint("CAN bus and wiring map", "bold"))

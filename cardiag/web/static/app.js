@@ -375,6 +375,23 @@
     return wrap;
   }
 
+  // A table with a header row and N text columns. Values are set via el(),
+  // which uses textContent, so nothing from the data is ever parsed as HTML.
+  function gridTable(headers, rows) {
+    const wrap = el("div", "table-wrap");
+    const table = el("table", "data grid");
+    const head = el("tr");
+    headers.forEach((h) => head.appendChild(el("th", null, h)));
+    table.appendChild(head);
+    rows.forEach((cells) => {
+      const tr = el("tr");
+      cells.forEach((cell) => tr.appendChild(el("td", null, cell)));
+      table.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    return wrap;
+  }
+
   /* ----------------------------------------------------------- live view */
 
   async function startLive() {
@@ -440,6 +457,16 @@
       tile.extremes.textContent =
         `${format(channel.min)} – ${format(channel.max)}`;
     }
+    // Where cardiag knows the wire a reading comes off, name it, so a value
+    // that looks wrong can be chased to a circuit and connector pin. Only the
+    // sensor channels carry one, so most tiles stay uncluttered.
+    if (channel.circuit) {
+      const c = channel.circuit;
+      tile.wire.textContent = `wire ${c.circuit} · ${c.location} · ${c.color}`;
+      tile.wire.hidden = false;
+    } else {
+      tile.wire.hidden = true;
+    }
     drawSpark(tile.spark, channel.history);
   }
 
@@ -469,8 +496,11 @@
     foot.appendChild(extremes);
     foot.appendChild(el("span", null, channel.unit || ""));
 
-    root.append(label, value, meter, spark, foot);
-    return { root, value, meter, fill, spark, extremes };
+    const wire = el("div", "tile-wire");
+    wire.hidden = true;
+
+    root.append(label, value, meter, spark, foot, wire);
+    return { root, value, meter, fill, spark, extremes, wire };
   }
 
   // 2px line, de-emphasised, no axes - a sparkline shows shape, not values.
@@ -1617,6 +1647,90 @@
       });
       body.appendChild(section);
     }
+
+    if (payload.canbus) body.appendChild(renderWiring(payload.canbus));
+  }
+
+  // The read-only wiring/bus map, collapsed by default so it does not crowd the
+  // tab. This is the physical half of a reading: a live value that looks wrong
+  // on the Live tab names its circuit, and this is where that circuit lives.
+  const CIRCUIT_GROUPS = [
+    ["power", "Power"],
+    ["ground", "Grounds (at the PCM)"],
+    ["ignition", "Ignition wake-up"],
+    ["can", "CAN-C bus"],
+    ["sensor", "Primary sensors"],
+    ["actuator", "Actuators (reported, not driven)"],
+  ];
+
+  function renderWiring(map) {
+    const root = el("details", "section wiring");
+    root.appendChild(el("summary", null, "Wiring & bus map"));
+    root.appendChild(el("p", "muted",
+      "Read-only reference: which wire carries what, and the grounds and fuses "
+      + "behind it. A live reading that looks wrong can be traced to its "
+      + "circuit here."));
+
+    // Buses.
+    (map.buses || []).forEach((bus) => {
+      const block = el("div", "wiring-bus");
+      block.appendChild(el("h4", null,
+        `${bus.name} — ${bus.speed_kbps} kbps`));
+      block.appendChild(el("p", null, bus.where));
+      block.appendChild(el("p", "muted", bus.access));
+      root.appendChild(block);
+    });
+
+    // Diagnostic connector.
+    if (map.dlc_pins && map.dlc_pins.length) {
+      root.appendChild(el("h4", null, "Diagnostic connector (J1962)"));
+      root.appendChild(gridTable(["pin", "function"],
+        map.dlc_pins.map((p) => [`pin ${p.pin}`, p.function])));
+    }
+
+    // Circuits, grouped by category.
+    const byCategory = {};
+    (map.circuits || []).forEach((c) => {
+      (byCategory[c.category] = byCategory[c.category] || []).push(c);
+    });
+    CIRCUIT_GROUPS.forEach(([key, title]) => {
+      const group = byCategory[key];
+      if (!group || !group.length) return;
+      root.appendChild(el("h4", null, title));
+      root.appendChild(gridTable(["where", "circuit", "wire", "function"],
+        group.map((c) => [
+          c.location, c.circuit, c.color,
+          c.pid ? `${c.function}  →  ${c.pid}` : c.function,
+        ])));
+    });
+
+    // Grounding points.
+    if (map.grounds && map.grounds.length) {
+      root.appendChild(el("h4", null, "Chassis grounding points"));
+      root.appendChild(gridTable(["point", "where", "shares it with"],
+        map.grounds.map((g) => [g.name, g.location, g.serves])));
+      if (map.ground_spec) {
+        root.appendChild(el("p", "muted",
+          `A healthy module ground measures ${map.ground_spec}.`));
+      }
+    }
+
+    // Fuses, grouped by panel in listed order.
+    if (map.fuses && map.fuses.length) {
+      root.appendChild(el("h4", null, "Key fuses"));
+      const panels = [];
+      map.fuses.forEach((f) => {
+        if (!panels.includes(f.panel)) panels.push(f.panel);
+      });
+      panels.forEach((panel) => {
+        root.appendChild(el("h5", "muted", panel));
+        root.appendChild(gridTable(["fuse", "rating", "feeds"],
+          map.fuses.filter((f) => f.panel === panel)
+            .map((f) => [f.position, f.rating, f.feeds])));
+      });
+    }
+
+    return root;
   }
 
   /* ------------------------------------------------------ install as app */
