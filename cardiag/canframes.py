@@ -50,6 +50,14 @@ class Signal:
     note: str = ""
 
 
+#: The two 11-bit buses this module maps. They share an ID number space, so the
+#: same arbitration ID means different things on each - 0x210 is brake pressure
+#: on CAN-C but the instrument-panel dimmer on CAN-B. Frames are therefore kept
+#: in separate tables and never merged into one lookup.
+CAN_C = "CAN-C (500k)"
+CAN_B = "CAN-B (83.3k)"
+
+
 @dataclass(frozen=True)
 class BroadcastFrame:
     can_id: int
@@ -59,6 +67,7 @@ class BroadcastFrame:
     confidence: str
     signals: tuple[Signal, ...] = ()
     note: str = ""
+    bus: str = CAN_C
 
     @property
     def code(self) -> str:
@@ -152,6 +161,91 @@ _FRAMES: tuple[BroadcastFrame, ...] = (
 
 BY_ID: dict[int, BroadcastFrame] = {frame.can_id: frame for frame in _FRAMES}
 
+
+# ---------------------------------------------------------------------------
+# CAN-B (interior / body, 83.3 kbps). This is the bus the overhead console and
+# radio sit on - the one cardiag's canbus.py names but does not yet decode.
+#
+# HONESTY, loudly: every entry below is REVERSE-ENGINEERED FROM A DIFFERENT CAR.
+# The signal meanings come from latonita's Jeep Grand Cherokee WH capture and
+# BiggRanger's Grand Cherokee / Durango radio work - not from a 2006 LX Charger.
+# CAN-B layouts differ by platform, so each ID here is a STARTING HYPOTHESIS to
+# confirm against an 83.3k capture from the actual car, never a decoded fact.
+# They are kept note-only (no byte offsets, no scale) because none is verified
+# on this platform; hz/dlc are 0 where the source did not record them.
+# ---------------------------------------------------------------------------
+
+#: One line to print above the CAN-B table so the caveat is never lost.
+CANB_CAVEAT = ("Reverse-engineered from a Jeep (Grand Cherokee WH / Durango), "
+               "not a 2006 LX Charger - treat every ID as a hypothesis to "
+               "confirm against an 83.3k capture from the car.")
+
+_CANB_FRAMES: tuple[BroadcastFrame, ...] = (
+    BroadcastFrame(0x000, "Ignition state", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Off / ACC / running / cranking. The radio needs it to "
+                        "wake (BiggRanger)."),
+    BroadcastFrame(0x002, "Engine speed / road speed", 0.0, 0, OBSERVED,
+                   bus=CAN_B, note="RPM, vehicle speed and wheel-pulse counters "
+                                   "(latonita)."),
+    BroadcastFrame(0x003, "Gear selector / brake", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="PRND position, brake switch, ESP-off bit (latonita)."),
+    BroadcastFrame(0x006, "Turn signals / hazards", 0.0, 0, OBSERVED, bus=CAN_B),
+    BroadcastFrame(0x013, "Doors / seatbelt", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Door-ajar bits and driver belt-unbuckled (latonita)."),
+    BroadcastFrame(0x014, "Odometer / outside temp", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="24-bit odometer and outside air temperature "
+                        "(latonita)."),
+    BroadcastFrame(0x015, "Charging voltage", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Battery / charging voltage, ~0.1 V per count "
+                        "(latonita)."),
+    BroadcastFrame(0x01B, "VIN", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="VIN across three multiplexed frames (latonita)."),
+    BroadcastFrame(0x02C, "Coolant temperature", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Coolant temp, ~raw minus 40 degC (latonita)."),
+    BroadcastFrame(0x0D0, "Parking brake", 0.0, 0, OBSERVED, bus=CAN_B),
+    BroadcastFrame(0x0F0, "Time set", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Radio -> SKREEM when the clock is changed "
+                        "(BiggRanger)."),
+    BroadcastFrame(0x09F, "Radio source / mode", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="RAR radio source/mode; button bits unconfirmed "
+                        "(latonita)."),
+    BroadcastFrame(0x159, "Fuel level", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Fuel level, ~0.5 L per count, uncalibrated; a validity "
+                        "flag rides a separate byte (latonita)."),
+    BroadcastFrame(0x1A7, "Fuel flow", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Instantaneous fuel flow (latonita)."),
+    BroadcastFrame(0x1AC, "Dimmer wheel", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Dash dimmer-wheel position (latonita)."),
+    BroadcastFrame(0x1B2, "4WD lever", 0.0, 0, OBSERVED, bus=CAN_B),
+    BroadcastFrame(0x1B4, "Compass heading", 2.0, 0, OBSERVED, bus=CAN_B,
+                   note="Compass heading, ~2 deg per count, 500 ms cadence "
+                        "(latonita)."),
+    BroadcastFrame(0x1C8, "Exterior lights", 0.0, 0, OBSERVED, bus=CAN_B),
+    BroadcastFrame(0x210, "Instrument-panel dimmer", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Panel dimmer level (latonita). NOTE: 0x210 on CAN-C is "
+                        "brake pressure - different bus, different meaning."),
+    BroadcastFrame(0x2C0, "Accelerator pedal", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Accelerator pedal position (latonita)."),
+    BroadcastFrame(0x370, "Wiper sweep", 0.0, 0, OBSERVED, bus=CAN_B),
+    BroadcastFrame(0x394, "Radio buttons", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="RAR radio mode / button bits; unconfirmed (latonita)."),
+    BroadcastFrame(0x3D0, "Audio settings", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="Volume, bass, mid, treble, balance, fade (latonita). "
+                        "NOTE: 0x3D0 on CAN-C is an unrelated dynamic frame."),
+    BroadcastFrame(0x3DD, "VES-present (inject)", 0.0, 0, OBSERVED, bus=CAN_B,
+                   note="latonita's VES enabler: injecting 03 00 00 00 00 00 00 "
+                        "00 tells the RAR radio a rear-ent unit is present, "
+                        "which switches its AUX input on."),
+    BroadcastFrame(0x3EC, "Time broadcast", 1.0, 0, OBSERVED, bus=CAN_B,
+                   note="Current time from the SKREEM module, ~1 Hz "
+                        "(BiggRanger)."),
+    BroadcastFrame(0x400, "Network management (OSEK)", 0.0, 0, OBSERVED,
+                   bus=CAN_B, note="0x400-0x41E is the OSEK NM ring - bus "
+                                   "housekeeping, not sensor data (latonita)."),
+)
+
+CANB_BY_ID: dict[int, BroadcastFrame] = {f.can_id: f for f in _CANB_FRAMES}
+
 #: Diagnostic IDs, named so a capture annotator does not treat them as unknown.
 DIAGNOSTIC_IDS = {
     0x7DF: "OBD functional request (all ECUs)",
@@ -164,11 +258,21 @@ DIAGNOSTIC_IDS = {
 }
 
 
-def frames() -> list[BroadcastFrame]:
+def frames(bus: str | None = None) -> list[BroadcastFrame]:
+    """CAN-C frames by default; pass ``CAN_B`` for the interior-bus table."""
+    if bus == CAN_B:
+        return list(_CANB_FRAMES)
     return list(_FRAMES)
 
 
+def canb_frames() -> list[BroadcastFrame]:
+    """The interior-bus (CAN-B) reference table. See CANB_CAVEAT first."""
+    return list(_CANB_FRAMES)
+
+
 def get(can_id: int) -> BroadcastFrame | None:
+    """A CAN-C frame by ID. CAN-B lives in CANB_BY_ID; the two are never merged,
+    because an ID means different things on each bus."""
     return BY_ID.get(can_id)
 
 
