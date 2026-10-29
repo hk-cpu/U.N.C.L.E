@@ -6,12 +6,6 @@ run off the end of the frame is skipped rather than guessed.
 """
 
 from cardiag import canframes
-from cardiag.cli import main
-
-
-def run(capsys, *argv):
-    code = main(list(argv))
-    return code, capsys.readouterr().out
 
 
 def test_every_signal_fits_inside_its_frame():
@@ -95,45 +89,3 @@ def test_the_multi_byte_dynamic_frame_reads_each_attributed_byte():
     ann = canframes.annotate(0x608, bytes([0x11, 0, 0, 0, 0, 0x55, 0x66, 0]))
     raws = {(r.start_byte, r.raw) for r in ann.readings}
     assert raws == {(0, 0x11), (5, 0x55), (6, 0x66)}
-
-
-# ---------------------------------------------------------------------------
-# CAN-B interior-bus reference (separate bus; never merged with CAN-C)
-# ---------------------------------------------------------------------------
-
-def test_canb_frames_are_tagged_to_the_interior_bus():
-    canb = canframes.canb_frames()
-    assert canb, "the CAN-B table should carry entries"
-    assert all(f.bus == canframes.CAN_B for f in canb)
-    # No scale was verified on this platform, so they stay note-only.
-    assert all(f.signals == () for f in canb)
-
-
-def test_the_two_buses_are_never_merged_despite_shared_ids():
-    # 0x210 and 0x3D0 exist on BOTH buses with different meanings. The CAN-C
-    # lookup and annotator must only ever see the CAN-C frame.
-    assert "brake" in canframes.get(0x210).name.lower()
-    assert canframes.CANB_BY_ID[0x210].name == "Instrument-panel dimmer"
-    assert canframes.get(0x210).bus == canframes.CAN_C
-    # annotate() is CAN-C only, so a 0x210 capture reads brake pressure.
-    ann = canframes.annotate(0x210, bytes([0, 0, 0x55, 0, 0, 0, 0, 0]))
-    assert any(r.name == "brake_pressure" for r in ann.readings)
-
-
-def test_canb_frames_list_prints_the_cross_platform_caveat(capsys):
-    code, out = run(capsys, "frames")
-    assert code == 0
-    assert "CAN-B interior-bus frames" in out
-    # The caveat must be shown (single words survive line-wrapping).
-    assert "Jeep" in out and "hypothesis" in out
-    assert "VES" in out                         # a signature CAN-B entry
-
-
-def test_canb_shows_in_json_separately_from_can_c(capsys):
-    import json
-    code, out = run(capsys, "--json", "frames")
-    payload = json.loads(out)
-    assert any(f["id"] == "0x3EC" for f in payload["canb_frames"])
-    # 0x3EC must not leak into the CAN-C list.
-    assert all(f["id"] != "0x3EC" for f in payload["frames"])
-    assert "Jeep" in payload["canb_caveat"]

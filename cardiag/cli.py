@@ -1585,18 +1585,15 @@ def _parse_savvycan(lines):
 
 def _frames_list(args: argparse.Namespace) -> int:
     known = canframes_module.frames()
-    canb = canframes_module.canb_frames()
     if args.json:
-        def _frame_json(f):
-            return {"id": f.code, "name": f.name, "bus": f.bus, "hz": f.hz,
-                    "dlc": f.dlc, "confidence": f.confidence, "note": f.note,
-                    "signals": [{"name": s.name, "start_byte": s.start_byte,
-                                 "length": s.length, "signed": s.signed,
-                                 "note": s.note} for s in f.signals]}
         print(json.dumps({
-            "frames": [_frame_json(f) for f in known],
-            "canb_frames": [_frame_json(f) for f in canb],
-            "canb_caveat": canframes_module.CANB_CAVEAT,
+            "frames": [
+                {"id": f.code, "name": f.name, "hz": f.hz, "dlc": f.dlc,
+                 "confidence": f.confidence,
+                 "signals": [{"name": s.name, "start_byte": s.start_byte,
+                              "length": s.length, "signed": s.signed, "note": s.note}
+                             for s in f.signals]}
+                for f in known],
             "diagnostic_ids": {f"0x{k:03X}": v
                                for k, v in canframes_module.DIAGNOSTIC_IDS.items()},
         }, indent=2))
@@ -1617,21 +1614,6 @@ def _frames_list(args: argparse.Namespace) -> int:
                 + (f"-{s.start_byte + s.length - 1}" if s.length > 1 else "")
                 for s in frame.signals)
             print(console.wrap(f"{frame.code}: {bits}", indent="  "))
-
-    # CAN-B: a separate table, with the cross-platform caveat it must carry.
-    print()
-    print(console.paint("CAN-B interior-bus frames (83.3 kbps)", "bold"))
-    print(console.wrap(console.paint(canframes_module.CANB_CAVEAT, "dim")))
-    print()
-    print(console.table(
-        [(f.code, f.name,
-          f"{f.hz:g} Hz" if f.hz else "-", str(f.dlc) if f.dlc else "-")
-         for f in canb],
-        headers=("id", "frame", "rate", "dlc")))
-    print()
-    for frame in canb:
-        if frame.note:
-            print(console.wrap(console.paint(f"{frame.code}: {frame.note}", "dim")))
     return 0
 
 
