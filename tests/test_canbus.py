@@ -98,3 +98,69 @@ def test_canbus_json_is_machine_readable(capsys):
     assert any(b["speed_kbps"] == 500.0 for b in payload["buses"])
     circuits = {c["circuit"]: c for c in payload["circuits"]}
     assert circuits["K1"]["pid"] == "INTAKE_PRESSURE"
+
+
+# ---------------------------------------------------------------------------
+# Grounding topology and fuses
+# ---------------------------------------------------------------------------
+
+def test_grounds_are_well_formed_and_cover_the_map():
+    names = {g.name for g in canbus.grounds()}
+    # The PCM ground point and the DLC ground point are the two that matter most
+    # to cardiag, so they must be present.
+    assert {"G102", "G202"} <= names
+    for g in canbus.grounds():
+        assert g.name.startswith("G")
+        assert g.location and g.serves
+
+
+def test_pcm_ground_names_the_pcm_circuits():
+    g102 = canbus.BY_GROUND["G102"]
+    assert "PCM" in g102.serves
+    # It ties back to the PCM ground circuits the pinout already defines.
+    assert "Z816" in g102.note and "Z13" in g102.note
+
+
+def test_key_fuses_exist_for_both_panels():
+    assert canbus.fuses(canbus.IPM), "the under-hood IPM must have fuses"
+    assert canbus.fuses(canbus.PDC), "the trunk PDC must have fuses"
+    # Every fuse that claims to be the same wire as a circuit must name a real
+    # circuit, or the cross-reference points at nothing.
+    for fuse in canbus.fuses():
+        if fuse.circuit:
+            assert fuse.circuit in canbus.BY_CIRCUIT
+
+
+def test_pcm_constant_feed_links_to_its_circuit():
+    linked = canbus.fuses_for_circuit("A209")
+    assert [f.position for f in linked] == ["Fuse 11"]
+    assert "keep-alive" in linked[0].feeds.lower()
+
+
+def test_ignition_run_start_fuse_links_to_the_wake_circuit():
+    # Fuse 29 feeds F18, the RUN-START wire cockpit mode watches.
+    assert [f.position for f in canbus.fuses_for_circuit("F18")] == ["Fuse 29"]
+
+
+def test_canbus_command_shows_grounds_and_fuses(capsys):
+    code, out = run(capsys, "canbus")
+    assert code == 0
+    assert "G102" in out and "grounding" in out.lower()
+    assert "Fuse 11" in out and "Rear PDC" in out
+
+
+def test_canbus_category_filter_hides_grounds_and_fuses(capsys):
+    # The grounds/fuses blocks are part of the full reference, not a circuit
+    # category, so a narrow filter should not print them.
+    code, out = run(capsys, "canbus", "--category", "sensor")
+    assert code == 0
+    assert "G102" not in out
+    assert "Fuse 11" not in out
+
+
+def test_canbus_json_includes_grounds_and_fuses(capsys):
+    code, out = run(capsys, "--json", "canbus")
+    payload = json.loads(out)
+    assert any(g["name"] == "G202" for g in payload["grounds"])
+    assert any(f["position"] == "Fuse 11" for f in payload["fuses"])
+    assert "ohm" in payload["ground_spec"]

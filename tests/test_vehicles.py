@@ -66,6 +66,33 @@ def test_mds_cylinders():
     assert engine.is_deactivated(2) is False
 
 
+def test_mds_enabling_conditions_are_documented():
+    joined = " ".join(CHARGER.notes)
+    # The RPM window and a couple of the other gates should be stated, so the
+    # owner can tell "MDS never engages" (a reading out of window) apart from a
+    # broken solenoid.
+    assert "1200-3000" in joined
+    assert "12-90" in joined
+
+
+def test_p3400_raises_the_rationality_issue_not_the_lifter_one():
+    issues = {issue.key for issue in CHARGER.issues_for(["P3400"])}
+    assert "mds-rationality" in issues
+    # The lifter issue is keyed on the P030x misfire family, not P34xx.
+    assert "mds-lifter" not in issues
+
+
+def test_mds_solenoid_codes_match_by_prefix():
+    titles = [issue.title for issue in CHARGER.issues_for(["P3449"])]
+    assert "MDS solenoid or rationality fault" in titles
+
+
+def test_p3400_has_a_code_note_tying_it_to_a_lean_bank():
+    note = CHARGER.code_notes["P3400"].lower()
+    assert "lean" in note
+    assert "solenoid" in note
+
+
 def test_firing_order_covers_every_cylinder_once():
     order = CHARGER.engine.firing_order
     assert sorted(order) == list(range(1, 9))

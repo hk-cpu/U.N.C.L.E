@@ -311,6 +311,89 @@ cardiag live RPM SPEED --refresh 0.1 --log drive.csv
 The CSV timestamps are Unix epoch seconds to the millisecond, which lines up
 directly against a SavvyCAN or `candump` capture.
 
+`cardiag frames` is the other half of that: point it at the raw capture and it
+labels the broadcast frames it recognises — which ID is the 75 Hz engine frame,
+which carry wheel speeds, brake pressure, steering — and shows the raw bytes at
+the positions those signals are observed at:
+
+```bash
+cardiag frames capture.log              # summary: which frames, how often
+cardiag frames capture.log --id 0x312   # one frame over time, raw
+cardiag frames --list                   # the frame map, no capture needed
+```
+
+It is read-only and honest about its limits: the map is reverse-engineered, so
+it shows raw values at documented byte positions and names what each is observed
+to track, but it does not invent a scale factor it can't back. You find the
+scale by correlating against a diagnostic reading — which is exactly why the two
+commands share a timestamp format.
+
+### Reading a pull
+
+The logs a tuner actually asks for are wide-open pulls, read point by point.
+Record the channels that matter while you make the run, then analyse the file —
+no connection to the car needed for the second step:
+
+```bash
+cardiag live RPM INTAKE_PRESSURE THROTTLE_POS TIMING_ADVANCE INTAKE_TEMP \
+    LONG_FUEL_TRIM_1 LONG_FUEL_TRIM_2 --log mypull.csv
+cardiag pull mypull.csv
+```
+
+`cardiag pull` finds the wide-open runs in the log and reads each one off:
+air/fuel against the safe window (commanded ratio from the car, or a wideband if
+you logged one — never dressed up as measured when it is only commanded), timing
+eased back as the revs climb (the knock-retard signature, without a knock PID),
+intake air heat-soaking across the run, and fuel trims at wide-open throttle. It
+also bins one channel — timing by default — into an RPM × load table, the view a
+tuner works in. `--channel LONG_FUEL_TRIM_1` tables a different one; `--json`
+scripts it.
+
+The air/fuel check uses the safe WOT window for this engine (about 12.2–12.8:1,
+richer being the safe side); it tells you whether a change you made landed in the
+window, which is the point of logging a pull in the first place.
+
+No car to hand? A ready-made pull ships in [`examples/`](examples/):
+
+```bash
+cardiag pull examples/charger-pull.csv
+```
+
+The browser app's **Tuning** tab does the same capture-and-analyse with no
+command line. None of it writes to the car.
+
+`cardiag live --tune --log pull.csv` records the right channel set in one
+command, instead of listing them by hand.
+
+### Reading a calibration bin
+
+If you already have a full calibration dump (a *bin*, read off the car with a
+proper flashing tool — not an ELM327) and an **XDF** written for that exact
+calibration, `cardiag bin` shows you what is in it — the same read that TunerPro
+does:
+
+```bash
+cardiag bin mycar.bin mycar.xdf --list                 # tables and constants
+cardiag bin mycar.bin mycar.xdf --table "Spark Advance"  # one table
+```
+
+A ready-made synthetic demo ships in [`examples/`](examples/) so the viewer runs
+with no files of your own:
+
+```bash
+cardiag bin examples/demo.bin examples/demo.xdf --list
+```
+
+This is **display only**. It opens both files read-only, decodes values
+big-endian (correct for the PowerPC NGC; `--little-endian` to override) and
+signed per the XDF's own flag, and applies the XDF's scaling equation — and when
+it can't parse an equation or an address runs off the end of the bin, it says so
+rather than inventing a number. It does not edit, checksum, write or flash
+anything, and it does not check the XDF matches the bin's calibration — a
+mismatched XDF reads the wrong addresses, so match the OSID (`cardiag
+calibration`) yourself. You supply both files; cardiag ships neither a real bin
+nor a real XDF.
+
 ### What this does not do
 
 **It does not write calibrations to the ECU.** That is a deliberate limit, not
@@ -453,6 +536,11 @@ skip straight past the guessing.
 | `cardiag vin` | Decode and validate the VIN |
 | `cardiag live` | Live dashboard |
 | `cardiag live --log drive.csv` | Dashboard plus recording |
+| `cardiag pull mypull.csv` | Analyse a recorded pull — works offline, no car needed |
+| `cardiag bin car.bin car.xdf --list` | View a calibration bin against an XDF — read-only, no car needed |
+| `cardiag frames capture.log` | Annotate a raw CAN-C sniffer capture — read-only, no car needed |
+| `cardiag sensor temp --ohms 484` | Sensor transfer functions for bench testing — no car needed |
+| `cardiag canbus` | Bus and wiring map — works offline, no car needed |
 | `cardiag monitors` | Emissions readiness monitors |
 | `cardiag freeze` | Freeze frame from when the fault was stored |
 | `cardiag read RPM COOLANT_TEMP` | Read specific parameters once |

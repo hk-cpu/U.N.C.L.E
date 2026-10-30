@@ -16,8 +16,17 @@ Two things this map is deliberately good for:
 
 The data is a curated subset of the factory NGC3 four-connector pinout - the
 power, ground, ignition, CAN and primary-sensor circuits that this software
-actually reasons about - not the complete 152-pin harness. Everything is drawn
-from the vehicle's own wiring and is read-only.
+actually reasons about - not the complete 152-pin harness. Alongside the PCM
+harness it carries the chassis grounding points and the powertrain/diagnostic
+fuses, because a dead PCM or a "no communication" fault far more often traces to
+a blown feed or a bad ground than to the bus itself. Everything is drawn from
+the vehicle's own wiring and is read-only.
+
+A note on cross-referencing: the fuse and ground tables name PCM connector pins
+in places, and those come from a different source document than the C1-C4 pinout
+above. Where the two disagree on a cavity or circuit number they are left
+un-cross-linked rather than reconciled by guesswork; a fuse or ground is tied to
+a named circuit here only where both sources agree it is the same wire.
 
 Safety note carried from the vehicle reference, and enforced in spirit by the
 rest of cardiag: CAN-C is a live powertrain bus. cardiag only ever transmits
@@ -236,3 +245,222 @@ def power_map() -> dict[str, list[Circuit]]:
         "ignition": circuits(IGNITION),
         "ground": circuits(GROUND),
     }
+
+
+# ---------------------------------------------------------------------------
+# Chassis grounding topology (G100-G304)
+# ---------------------------------------------------------------------------
+#
+# The battery sits in the trunk while the starter, alternator and PCM are up
+# front, so ground integrity across the whole unibody matters. The modules do
+# not ground straight to the battery; they land on shared chassis points. A
+# loose or corroded point drags several unrelated circuits down together - the
+# classic "everything is wrong at once" fault - which is exactly when knowing
+# what shares a ground earns its keep.
+
+#: The factory spec for a healthy module ground on this platform.
+GROUND_SPEC = "less than 1.0 ohm resistance and under 100 mV voltage drop"
+
+
+@dataclass(frozen=True)
+class Ground:
+    """One chassis grounding point and what shares it."""
+
+    name: str          # e.g. "G102"
+    location: str
+    serves: str
+    note: str = ""
+
+
+GROUNDS: tuple[Ground, ...] = (
+    Ground("G100", "Left front of the engine compartment",
+           "Front control module (FCM), left front lamps, instrument cluster "
+           "reference"),
+    Ground("G101", "Right front of the engine compartment, by the shock tower",
+           "ABS/ESP module, integrated power module (IPM), right headlamps"),
+    Ground("G102", "Right side of the engine compartment, near the PCM",
+           "PCM chassis grounds, A/C compressor, cooling-fan relays",
+           note="The PCM's own case grounds (circuits Z816 and Z13) land here. "
+                "A bad G102 is a prime suspect when several engine sensors read "
+                "wrong at the same time."),
+    Ground("G200", "Behind the left side of the instrument panel, near the "
+           "ignition-switch breakout",
+           "Instrument cluster (CCN), HVAC control, ABS/ESP interior sense, "
+           "premium radio/antenna"),
+    Ground("G201", "Behind the right side of the instrument panel",
+           "Front HVAC blower motor / power module, passenger-side dash"),
+    Ground("G202", "Behind the left instrument panel, near the cluster breakout",
+           "DLC pins 4 and 5, NAG1 TCM, SKREEM/immobiliser, audio amplifier, "
+           "cruise",
+           note="The diagnostic connector grounds here. A bad G202 can imitate "
+                "an adapter or 'no communication' fault that is really the DLC "
+                "ground."),
+    Ground("G300", "Below the left B-pillar",
+           "Left body harness, driver door module, anti-theft, ABS rear sensor "
+           "shield, cluster"),
+    Ground("G301", "Below the right B-pillar",
+           "Right body harness, passenger door module, shifter lever assembly, "
+           "exterior lamps"),
+    Ground("G302", "Right front of the cargo pan (trunk)",
+           "Rear power distribution centre, fuel pump module, rear tail/stop "
+           "lamps, TCM secondary ground"),
+    Ground("G303", "Right rear of the cargo pan, by the decklid latch",
+           "Decklid latch, rear fascia and licence-plate lamps, battery "
+           "negative (B-) trunk ground stud",
+           note="Covers the G303/G304 pair. This is where the trunk-mounted "
+                "battery's negative returns to the body."),
+)
+
+BY_GROUND: dict[str, Ground] = {g.name: g for g in GROUNDS}
+
+
+def grounds() -> list[Ground]:
+    """The chassis grounding points this reference records."""
+    return list(GROUNDS)
+
+
+# ---------------------------------------------------------------------------
+# Key fuses and relays (powertrain / diagnostic feeds)
+# ---------------------------------------------------------------------------
+#
+# Not the whole box - the front Integrated Power Module (IPM) and rear Power
+# Distribution Centre (PDC) carry dozens of circuits each. This is the subset
+# cardiag reasons about: the PCM's power, the automatic-shutdown (ASD) feed that
+# carries spark and injection, the fuel pump, the transmission module, and the
+# diagnostic connector's own feeds - the ones whose loss looks like a failure
+# cardiag would otherwise try to diagnose on the bus.
+
+#: Fuse panels on this car.
+IPM = "Front IPM (under-hood)"
+PDC = "Rear PDC (trunk)"
+
+
+@dataclass(frozen=True)
+class Fuse:
+    """One fuse (or cartridge) and the circuit it protects."""
+
+    panel: str
+    position: str      # e.g. "Fuse 11"
+    rating: str        # e.g. "20 A"
+    feeds: str
+    #: A PCM harness circuit in :data:`BY_CIRCUIT` this fuse is the same wire
+    #: as, where both source documents agree; empty where they do not line up.
+    circuit: str = ""
+    note: str = ""
+
+
+FUSES: tuple[Fuse, ...] = (
+    # --- Front IPM ---------------------------------------------------------
+    Fuse(IPM, "Fuse 10", "5 A",
+         "PCM processor feed and starter-relay coil"),
+    Fuse(IPM, "Fuse 11", "20 A",
+         "PCM constant battery (B+), keep-alive memory", circuit="A209",
+         note="Pull this and the PCM forgets its learned fuel trims and "
+              "adaptations - they have to relearn on the next drive."),
+    Fuse(IPM, "Fuse 14", "25 A",
+         "Automatic-shutdown (ASD) relay output to the PCM"),
+    Fuse(IPM, "Fuse 15", "25 A",
+         "ASD relay output to fuel injectors 1-8 and ignition coils 1-8",
+         note="Shares the ASD relay (R13) with fuse 14. When the engine stops "
+              "and the ASD relay drops, spark and fuel die together - which is "
+              "what circuit F42 reports as the ASD feed going away."),
+    Fuse(IPM, "Fuse 17", "30 A", "ABS/ESP module valve feed"),
+    Fuse(IPM, "Fuse 19", "50 A",
+         "Radiator cooling fan (high) relay and fan control"),
+    Fuse(IPM, "Fuse 20", "20 A",
+         "Starter motor solenoid relay (R9)",
+         note="The PCM commands this relay on circuit T752 (C3 pin 38)."),
+    Fuse(IPM, "Fuse 21", "50 A", "ABS/ESP module pump-motor feed"),
+    # --- Rear PDC ----------------------------------------------------------
+    Fuse(PDC, "Fuse 6", "20 A",
+         "Fuel pump module, fed via the fuel pump relay (R9)",
+         note="The PCM commands the fuel pump relay on circuit K31 (C3 pin "
+              "37)."),
+    Fuse(PDC, "Fuse 8", "15 A",
+         "DLC pin 16 constant B+, and the ignition-switch feed (PCM, fuel pump "
+         "relay, OCM)",
+         note="Feeds the diagnostic connector's always-hot pin 16, so a dead "
+              "fuse 8 can look like a dead adapter."),
+    Fuse(PDC, "Fuse 29", "5 A",
+         "Ignition RUN-START feed (PCM, ABS/ESP, FCM, cluster, SKREEM, stop "
+         "lamp switch)", circuit="F18",
+         note="Circuit F18 reaches the PCM at C1 pin 11 - the wake-up "
+              "transition cockpit mode watches for."),
+    Fuse(PDC, "Fuse 37", "15 A",
+         "NAG1 transmission control (TCM fused relay output and shifter)"),
+)
+
+
+def fuses(panel: str | None = None) -> list[Fuse]:
+    """The key fuses this reference records, or just those in one panel."""
+    if panel is None:
+        return list(FUSES)
+    return [f for f in FUSES if f.panel == panel]
+
+
+def fuses_for_circuit(circuit_name: str) -> list[Fuse]:
+    """Fuses tied to a named PCM harness circuit, where the two line up."""
+    name = circuit_name.strip().upper()
+    return [f for f in FUSES if f.circuit.upper() == name]
+
+
+# ---------------------------------------------------------------------------
+# Serialisation (shared by the CLI's --json and the web Vehicle tab)
+# ---------------------------------------------------------------------------
+
+def circuit_ref(pid_name: str) -> dict | None:
+    """A compact reference to the wire a live PID is read from, or None.
+
+    Small on purpose: just enough for a reading in the UI to point at the
+    physical circuit it comes from, so a value that looks wrong can be chased
+    to a wire and connector pin.
+    """
+    circuit = for_pid(pid_name)
+    if circuit is None:
+        return None
+    return {
+        "circuit": circuit.circuit,
+        "location": circuit.location,
+        "color": circuit.color,
+        "function": circuit.function,
+    }
+
+
+def as_dict(category: str | None = None) -> dict:
+    """The whole reference as plain data. ``category`` filters the circuits.
+
+    Grounds and fuses belong to the full map, so they are included only when no
+    category filter is applied - the same rule the printed view follows.
+    """
+    data: dict = {
+        "diag_request_id": DIAG_REQUEST_ID,
+        "diag_response_id": DIAG_RESPONSE_ID,
+        "buses": [
+            {"name": b.name, "speed_kbps": b.speed_kbps, "standard": b.standard,
+             "where": b.where, "access": b.access}
+            for b in BUSES
+        ],
+        "dlc_pins": [
+            {"pin": p.pin, "function": p.function, "note": p.note}
+            for p in DLC_PINS
+        ],
+        "circuits": [
+            {"circuit": c.circuit, "connector": c.connector, "pin": c.pin,
+             "location": c.location, "color": c.color, "function": c.function,
+             "category": c.category, "pid": c.pid, "note": c.note}
+            for c in circuits(category)
+        ],
+    }
+    if category is None:
+        data["grounds"] = [
+            {"name": g.name, "location": g.location, "serves": g.serves,
+             "note": g.note}
+            for g in GROUNDS
+        ]
+        data["ground_spec"] = GROUND_SPEC
+        data["fuses"] = [
+            {"panel": f.panel, "position": f.position, "rating": f.rating,
+             "feeds": f.feeds, "circuit": f.circuit, "note": f.note}
+            for f in FUSES
+        ]
+    return data

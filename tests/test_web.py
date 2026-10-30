@@ -10,9 +10,33 @@ from collections import deque
 import pytest
 
 from cardiag.web.server import serve
-from cardiag.web.service import ServiceError, VehicleService
+from cardiag.web.service import ServiceError, TUNING_CHANNELS, VehicleService
 
 CHARGER = "sim://?profile=charger-misfire"
+
+
+def test_browser_tuning_captures_commanded_ratio_for_afr():
+    # The AFR analysis reads COMMANDED_EQUIV_RATIO; a browser-captured pull must
+    # sample it too, or the web Tuning tab can never show the AFR window check.
+    assert "COMMANDED_EQUIV_RATIO" in TUNING_CHANNELS
+
+
+def test_browser_tuning_selects_priority_zero_pids_from_all_advertised():
+    # Listing the ratio in TUNING_CHANNELS is not enough: start_tuning must
+    # select from every advertised PID, not live_pids() (dashboard_order, which
+    # drops priority-0 PIDs). A stub car advertising 0x44 proves the ratio is
+    # kept rather than filtered back out.
+    from cardiag import pids
+
+    class _StubSession:
+        supported_pids = {0x0C, 0x44}          # RPM + commanded ratio (priority 0)
+
+    svc = VehicleService()
+    svc._session = _StubSession()
+    captured = {}
+    svc.start_live = lambda names=None: captured.setdefault("names", names) or {}
+    svc.start_tuning()
+    assert "COMMANDED_EQUIV_RATIO" in captured["names"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +161,32 @@ def test_live_flags_a_lean_bank(service):
     assert channel["value"] > 15
     assert channel["severity"] == "warning"
     service.stop_live()
+
+
+def test_vehicle_carries_the_wiring_map(service):
+    service.connect(CHARGER)
+    cb = service.vehicle()["canbus"]
+    # The map is reference data, available whatever car is connected.
+    assert cb["diag_request_id"] == 0x7E0
+    assert any(c["pid"] == "COOLANT_TEMP" for c in cb["circuits"])
+    assert any(g["name"] == "G102" for g in cb["grounds"])
+    assert any(f["position"] == "Fuse 11" for f in cb["fuses"])
+
+
+def test_live_readings_name_their_circuit(service):
+    service.connect(CHARGER)
+    service.start_live(["COOLANT_TEMP", "RPM"])
+    try:
+        channels = {c["name"]: c for c in service.live_snapshot()["channels"]}
+        # A sensor channel links to the wire it is read off...
+        ect = channels["COOLANT_TEMP"]["circuit"]
+        assert ect is not None
+        assert ect["circuit"] == "K2"
+        assert ect["location"] == "C2 pin 20"
+        # ...while a channel with no curated circuit simply has none.
+        assert channels["RPM"]["circuit"] is None
+    finally:
+        service.stop_live()
 
 
 def test_the_assistant_explains_a_scan(service):

@@ -1,0 +1,34 @@
+<!-- SYNTHETIC demo, not a real calibration. For `cardiag bin`. -->
+<XDFFORMAT version="1.80">
+  <XDFHEADER>
+    <BASEOFFSET offset="0x0" subtract="0" />
+  </XDFHEADER>
+  <XDFTABLE>
+    <title>Spark Advance</title>
+    <XDFAXIS id="x">
+      <units>RPM</units>
+      <LABEL index="0" value="800" />
+      <LABEL index="1" value="1600" />
+      <LABEL index="2" value="2400" />
+    </XDFAXIS>
+    <XDFAXIS id="y">
+      <units>kPa</units>
+      <LABEL index="0" value="30" />
+      <LABEL index="1" value="100" />
+    </XDFAXIS>
+    <XDFAXIS id="z">
+      <units>deg</units>
+      <EMBEDDEDDATA mmedaddress="0x10" mmedelementsizebits="8"
+                    mmedrowcount="2" mmedcolcount="3" mmedtypeflags="0x00" />
+      <MATH equation="X*0.5" />
+      <decimalpl>1</decimalpl>
+    </XDFAXIS>
+  </XDFTABLE>
+  <XDFCONSTANT>
+    <title>Rev Limiter</title>
+    <units>RPM</units>
+    <EMBEDDEDDATA mmedaddress="0x20" mmedelementsizebits="16"
+                  mmedtypeflags="0x00" />
+    <MATH equation="X" />
+  </XDFCONSTANT>
+</XDFFORMAT>

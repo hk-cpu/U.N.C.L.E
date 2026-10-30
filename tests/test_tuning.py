@@ -211,8 +211,14 @@ def test_timing_pulled_back_hard_is_flagged():
                 + ramp(15, start=1.5, RPM=(3000, 5000), TIMING_ADVANCE=(26, 14)))
     timing = topics(analyse_pull(pull))["Timing"]
 
-    assert timing.severity == "serious"
+    # A big fall is flagged for attention, but the timing trace alone can't tell
+    # a normal spark-table taper from knock retard, so it is not asserted as
+    # knock ('serious') - it names both causes and says to correlate.
+    assert timing.severity == "moderate"
     assert "12.0 degrees" in timing.detail
+    detail = timing.detail.lower()
+    assert "table" in detail and "retard" in detail
+    assert "usually means" not in detail
 
 
 def test_a_small_timing_drop_is_only_advisory():
@@ -320,3 +326,88 @@ def test_a_pull_through_a_gearshift_is_not_split_in_two():
     pulls = find_pulls(log)
     assert len(pulls) == 1
     assert pulls[0].rpm_range == (1500, 5600)
+
+
+# ---------------------------------------------------------------------------
+# Air/fuel against the safe window (the tuning instrument)
+# ---------------------------------------------------------------------------
+
+def _wot_pull(**channels):
+    """A short wide-open pull carrying the given constant channels."""
+    out = []
+    for i in range(8):
+        frac = i / 7
+        values = {"RPM": 2000 + 3000 * frac, "THROTTLE_POS": 88.0}
+        values.update(channels)
+        out.append(Sample(100 + i * 0.2, values))
+    return Pull(out)
+
+
+def _afr(pull):
+    return next((o for o in analyse_pull(pull) if o.topic == "Air/fuel"), None)
+
+
+def test_commanded_afr_in_the_window_reads_good():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.86))   # ~12.6:1
+    assert obs is not None and obs.severity == "good"
+    assert "12.6:1" in obs.detail
+    # Commanded, not measured: the caveat must be there.
+    assert "commanded" in obs.detail.lower()
+    assert "wideband" in obs.detail.lower()
+
+
+def test_lean_commanded_afr_is_flagged_serious():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.95))   # ~13.9:1
+    assert obs.severity == "serious"
+    assert "lean" in obs.detail.lower()
+
+
+def test_rich_afr_is_only_informational():
+    obs = _afr(_wot_pull(COMMANDED_EQUIV_RATIO=0.80))   # ~11.7:1
+    assert obs.severity == "info"
+    assert "richer" in obs.detail.lower()
+
+
+def test_a_logged_wideband_is_used_as_the_measurement():
+    obs = _afr(_wot_pull(WIDEBAND_AFR=13.4))
+    assert obs.severity == "serious"                   # 13.4 is lean
+    assert "measured" in obs.detail.lower()
+    # Measured, so the "confirm with a wideband" caveat is absent.
+    assert "wideband is the only way" not in obs.detail
+
+
+def test_a_logged_lambda_is_converted_to_afr():
+    obs = _afr(_wot_pull(WIDEBAND_LAMBDA=0.86))         # measured ~12.6:1
+    assert obs.severity == "good"
+    assert "measured" in obs.detail.lower()
+
+
+def test_no_afr_channel_means_no_afr_observation():
+    assert _afr(_wot_pull(TIMING_ADVANCE=25.0)) is None
+
+
+def test_pull_table_uses_engine_load_when_map_is_absent():
+    # A log with calculated load but no manifold pressure should still get an
+    # RPM x load table, not none.
+    samples = ramp(30, RPM=(1500, 5000), ENGINE_LOAD=(20, 95),
+                   TIMING_ADVANCE=(24, 20))
+    assert tuning.load_channel(samples) == "ENGINE_LOAD"
+    table = tuning.build_table(samples, "TIMING_ADVANCE",
+                               y_channel=tuning.load_channel(samples))
+    assert table is not None
+    assert table.y_channel == "ENGINE_LOAD"
+
+
+def test_load_channel_prefers_manifold_pressure_when_present():
+    samples = ramp(10, RPM=(1500, 5000), INTAKE_PRESSURE=(30, 95),
+                   ENGINE_LOAD=(20, 90))
+    assert tuning.load_channel(samples) == "INTAKE_PRESSURE"
+
+
+def test_nan_afr_samples_do_not_report_a_false_safe_reading():
+    # A log whose commanded-ratio samples are all NaN must not poison the mean
+    # and fall through to "richer than window - safe"; it yields no AFR reading.
+    pull = Pull(ramp(30, RPM=(1500, 5000), THROTTLE_POS=(90, 95),
+                     COMMANDED_EQUIV_RATIO=(float("nan"), float("nan")),
+                     TIMING_ADVANCE=(24, 22)))
+    assert "Air/fuel" not in topics(analyse_pull(pull))

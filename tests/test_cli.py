@@ -174,6 +174,35 @@ def test_live_rejects_an_unknown_pid(capsys):
         main(["--sim", "live", "NOT_A_PID", "--duration", "0.1"])
 
 
+def test_live_tune_records_the_channels_a_pull_is_read_from(capsys, tmp_path):
+    target = tmp_path / "pull.csv"
+    code, _ = run(capsys, "--sim", "--sim-profile", "charger", "live", "--tune",
+                  "--duration", "0.5", "--refresh", "0.1", "--log", str(target))
+    assert code == 0
+
+    header = target.read_text().splitlines()[0].split(",")
+    # The channels that make a log analysable as a pull must be present.
+    for channel in ("RPM", "INTAKE_PRESSURE", "THROTTLE_POS", "TIMING_ADVANCE"):
+        assert channel in header
+
+    # And the recorded log is readable by `cardiag pull`.
+    code, out = run(capsys, "pull", str(target))
+    assert code == 0
+
+
+def test_tune_capture_keeps_priority_zero_pids_the_dashboard_drops():
+    # The commanded equivalence ratio (PID 0x44) is priority 0, so dashboard_order
+    # - what Session.live_pids() uses - drops it. A pull's AFR analysis needs it,
+    # so `live --tune` selects from every advertised PID instead; this guards
+    # that seam (the old filter used the dashboard set and silently lost it).
+    from cardiag import pids
+    advertised = {0x0C, 0x44}          # RPM (ranked) + commanded ratio (priority 0)
+    dashboard = {p.name for p in pids.dashboard_order(advertised)}
+    all_names = {pids.BY_PID[p].name for p in advertised if p in pids.BY_PID}
+    assert "COMMANDED_EQUIV_RATIO" not in dashboard      # the old filter dropped it
+    assert "COMMANDED_EQUIV_RATIO" in all_names          # the fix keeps it
+
+
 # ---------------------------------------------------------------------------
 # Loggers
 # ---------------------------------------------------------------------------
@@ -285,6 +314,20 @@ def test_calibration_command(capsys):
     code, out = run(capsys, "--sim", "--sim-profile", "charger", "calibration")
     assert code == 0
     assert "68RT0057AA" in out
+    # The ID is explained as the OSID a tuning definition has to match.
+    assert "OSID" in out
+    assert "cardiag bin" in out
+
+
+def test_calibration_identifies_a_chrysler_part_number():
+    from cardiag.cli import _looks_like_chrysler_part, _calibration_match_notes
+
+    assert _looks_like_chrysler_part("04896405AG")
+    assert _looks_like_chrysler_part("P04896405AE")
+    assert not _looks_like_chrysler_part("68RT0057AA")
+    # The Chrysler-specific note only appears for a matching part number.
+    assert any("04896405" in note for note in _calibration_match_notes(["04896405AG"]))
+    assert not any("04896405" in note for note in _calibration_match_notes(["68RT0057AA"]))
 
 
 def test_scan_can_skip_mode_06(capsys):
@@ -375,3 +418,192 @@ def test_install_launcher_json(capsys, tmp_path, monkeypatch):
     payload = json.loads(out)
     assert code == 0
     assert payload["path"].endswith((".desktop", ".command", ".bat"))
+
+
+# ---------------------------------------------------------------------------
+# pull: analysing a recorded log off-car
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+EXAMPLE_LOG = Path(__file__).resolve().parent.parent / "examples" / "charger-pull.csv"
+
+
+def test_pull_analyses_the_example_log(capsys):
+    code, out = run(capsys, "pull", str(EXAMPLE_LOG))
+    assert code == 0
+    assert "Pull 1" in out
+    assert "Timing" in out
+    assert "TIMING_ADVANCE across RPM and load" in out
+
+
+def test_pull_json_is_machine_readable(capsys):
+    code, out = run(capsys, "--json", "pull", str(EXAMPLE_LOG))
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["samples"] > 0
+    assert payload["pulls"], "the example log contains a pull"
+    pull = payload["pulls"][0]
+    assert pull["rpm_range"][0] < pull["rpm_range"][1]
+    assert pull["observations"]
+    assert payload["table"]["x_channel"] == "RPM"
+
+
+def test_pull_reports_no_pull_in_a_cruise_log(capsys, tmp_path):
+    log = tmp_path / "cruise.csv"
+    log.write_text(
+        "timestamp,RPM,THROTTLE_POS,INTAKE_PRESSURE,TIMING_ADVANCE\n"
+        + "".join(f"{100 + i * 0.2},2000,18,34,28\n" for i in range(20)))
+    code, out = run(capsys, "pull", str(log))
+    assert code == 0
+    assert "No wide-open pull" in out
+
+
+def test_pull_on_a_missing_file_fails(capsys):
+    code, _ = run(capsys, "pull", "/no/such/log.csv")
+    assert code == 2
+
+
+def test_pull_on_a_log_without_the_channel_says_so(capsys, tmp_path):
+    # The log has a pull but no timing column, so the table is absent, not zeros.
+    log = tmp_path / "notiming.csv"
+    rows = "".join(
+        f"{100 + i * 0.2},{1800 + 180 * i},88,{60 + 2 * i}\n" for i in range(20))
+    log.write_text("timestamp,RPM,THROTTLE_POS,INTAKE_PRESSURE\n" + rows)
+    code, out = run(capsys, "pull", str(log))
+    assert code == 0
+    assert "does not contain TIMING_ADVANCE" in out
+
+
+# ---------------------------------------------------------------------------
+# bin: read-only XDF calibration viewer
+# ---------------------------------------------------------------------------
+
+EXAMPLE_BIN = Path(__file__).resolve().parent.parent / "examples" / "demo.bin"
+EXAMPLE_XDF = Path(__file__).resolve().parent.parent / "examples" / "demo.xdf"
+
+
+def test_bin_lists_the_definitions(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF), "--list")
+    assert code == 0
+    assert "Spark Advance" in out
+    assert "Rev Limiter" in out
+
+
+def test_bin_shows_a_table_with_scaled_values(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Spark Advance")
+    assert code == 0
+    assert "20.0" in out and "16.0" in out        # corners of the scaled table
+    assert "big-endian" in out
+
+
+def test_bin_shows_a_constant(capsys):
+    code, out = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Rev Limiter")
+    assert code == 0
+    assert "5600" in out
+
+
+def test_bin_json(capsys):
+    code, out = run(capsys, "--json", "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                    "--table", "Spark Advance")
+    payload = json.loads(out)
+    assert payload["cells"][0][0] == 20.0
+    assert payload["byte_order"] == "big-endian"
+
+
+def test_bin_unknown_table_fails(capsys):
+    code, _ = run(capsys, "bin", str(EXAMPLE_BIN), str(EXAMPLE_XDF),
+                  "--table", "Nope")
+    assert code == 2
+
+
+def test_bin_missing_file_fails(capsys):
+    code, _ = run(capsys, "bin", "/no/such.bin", str(EXAMPLE_XDF))
+    assert code == 2
+
+
+def test_bin_rejects_a_doctype_xdf(capsys, tmp_path):
+    hostile = tmp_path / "evil.xdf"
+    hostile.write_text('<!DOCTYPE x [<!ENTITY a "b">]><XDFFORMAT></XDFFORMAT>')
+    code, _ = run(capsys, "bin", str(EXAMPLE_BIN), str(hostile))
+    assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# frames: annotating a raw CAN-C capture (no car)
+# ---------------------------------------------------------------------------
+
+CANDUMP = (
+    "(1703001000.000000) can0 312#0ABB11223344FF00\n"
+    "(1703001000.013000) can0 200#000012340000ABCD\n"
+    "(1703001000.026000) can0 312#0AC011223344FF00\n"
+    "(1703001000.039000) can0 210#00005500000000AA\n"
+    "(1703001000.052000) can0 999#DEADBEEF\n"
+    "(1703001000.065000) can0 312#0AD511223344FF00\n"
+)
+
+
+def test_frames_list(capsys):
+    code, out = run(capsys, "frames", "--list")
+    assert code == 0
+    assert "Engine data" in out
+    assert "Brake pressure" in out
+
+
+def test_frames_summary_groups_and_flags_unknown(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "frames", str(cap))
+    assert code == 0
+    assert "0x312" in out and "Engine data" in out
+    assert "0x999" in out and "unknown" in out
+    assert "not in the frame map" in out
+
+
+def test_frames_one_id_shows_raw_only(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "frames", str(cap), "--id", "0x312")
+    assert code == 0
+    assert "0abb11223344ff00" in out
+    assert "no scaling is applied" in out
+
+
+def test_frames_json(capsys, tmp_path):
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "--json", "frames", str(cap))
+    payload = json.loads(out)
+    assert payload["total_frames"] == 6
+    ids = {row["id"]: row for row in payload["ids"]}
+    assert ids["0x312"]["count"] == 3
+    assert ids["0x999"]["known"] is False
+
+
+def test_frames_rate_uses_intervals_not_frame_count(capsys, tmp_path):
+    # 0x312 appears 3 times over a 0.065 s span, so the cadence is
+    # (3-1)/0.065 = ~30.8 Hz. The old count/span calc gave ~46.2 Hz.
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "--json", "frames", str(cap))
+    hz = {r["id"]: r["hz"] for r in json.loads(out)["ids"]}["0x312"]
+    assert 30.0 < hz < 31.0
+
+
+def test_frames_parses_savvycan_csv(capsys, tmp_path):
+    cap = tmp_path / "cap.csv"
+    cap.write_text(
+        "Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n"
+        "0.0,0x210,false,Rx,0,8,00,00,55,00,00,00,00,AA\n")
+    code, out = run(capsys, "frames", str(cap))
+    assert code == 0
+    assert "Brake pressure" in out
+
+
+def test_frames_on_an_empty_capture_fails(capsys, tmp_path):
+    cap = tmp_path / "empty.log"
+    cap.write_text("nothing to see here\n")
+    code, _ = run(capsys, "frames", str(cap))
+    assert code == 2

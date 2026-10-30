@@ -13,8 +13,9 @@ import time
 from collections import deque
 from typing import Any
 
-from .. import baseline as baseline_module, explain as explain_module, mode06, pids
-from .. import report as report_module, tuning, vehicles, vin as vin_module
+from .. import baseline as baseline_module, canbus, explain as explain_module
+from .. import mode06, pids, report as report_module, tuning
+from .. import vehicles, vin as vin_module
 from ..elm327 import ObdError
 from ..session import Reading, Session
 from ..transport import TransportError, describe_url, link_kind, link_label
@@ -46,11 +47,13 @@ GAUGE_INTERVAL = 0.05
 
 #: What the tuning view samples - the channels a tuner reads off a pull. MAP is
 #: the load axis, timing is the headline value, the trims and intake temp are
-#: what a pull is really being watched for.
+#: what a pull is really being watched for, and the commanded equivalence ratio
+#: is what the AFR analysis reads (so a browser-captured pull can show it, the
+#: same as a CLI log does), where the car answers it.
 TUNING_CHANNELS = [
     "RPM", "INTAKE_PRESSURE", "THROTTLE_POS", "TIMING_ADVANCE", "INTAKE_TEMP",
     "ENGINE_LOAD", "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1",
-    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2",
+    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2", "COMMANDED_EQUIV_RATIO",
 ]
 
 #: Time-aligned sample rows kept for tuning analysis. Larger than the sparkline
@@ -368,7 +371,12 @@ class VehicleService:
         """Live sampling of the channels a pull is read from."""
         with self._lock:
             session = self._require()
-            supported = {entry.name for entry in session.live_pids()}
+            # Build from every advertised PID, not live_pids() (dashboard_order,
+            # which drops priority-0 PIDs): COMMANDED_EQUIV_RATIO is priority 0,
+            # and the AFR analysis needs it, so the dashboard set would filter it
+            # back out even though it is in TUNING_CHANNELS.
+            supported = {pids.BY_PID[p].name
+                         for p in session.supported_pids if p in pids.BY_PID}
             wanted = [name for name in TUNING_CHANNELS if name in supported]
         return self.start_live(wanted or None)
 
@@ -494,6 +502,10 @@ class VehicleService:
         return {
             "profile": self._profile.to_dict() if self._profile else None,
             "vin": decoded,
+            # The read-only wiring/bus map, so the Vehicle tab can show which
+            # physical circuit a reading comes from. It is reference data, not
+            # tied to the connected car, so it is always available.
+            "canbus": canbus.as_dict(),
         }
 
     def available_channels(self) -> list[dict]:
@@ -619,6 +631,9 @@ class VehicleService:
                     "severity": _channel_severity(
                         name, latest["value"] if latest else None,
                         self._profile.thresholds if self._profile else None),
+                    # The wire this reading comes off, where cardiag knows it,
+                    # so a value that looks wrong can be traced to a circuit.
+                    "circuit": canbus.circuit_ref(name),
                 })
             return {
                 "sampling": self._sampling.is_set(),

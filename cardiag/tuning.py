@@ -20,8 +20,22 @@ Two rules carried over from the rest of the project:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
+
+#: The channels a tuner records to read a pull back: load and timing to see
+#: what the engine did, trims and the commanded ratio to see how it fuelled,
+#: intake and coolant temperature because both move the tune. These are PID
+#: names from :mod:`cardiag.pids`; a car that does not answer one simply leaves
+#: that column blank. Kept here so the CLI logger and the app agree on the set.
+LOG_CHANNELS = (
+    "RPM", "SPEED", "ENGINE_LOAD", "MAF", "INTAKE_PRESSURE", "THROTTLE_POS",
+    "TIMING_ADVANCE", "INTAKE_TEMP", "COOLANT_TEMP",
+    "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1",
+    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2",
+    "COMMANDED_EQUIV_RATIO", "O2_B1S1", "O2_B2S1",
+)
 
 #: Below this many samples a cell is treated as unvisited. One sample in a cell
 #: is an artefact of where the log happened to be polled, not a measurement of
@@ -50,6 +64,24 @@ MIN_PULL_SECONDS = 1.5
 #: And one that did not gain this many revs is not a pull at all. Throttle
 #: alone cannot tell a run from a stationary rev held at the limiter.
 MIN_PULL_RPM_RISE = 400.0
+
+#: Safe wide-open-throttle air/fuel window for the 5.7 NGC3, from the vehicle's
+#: own tuning reference (PE commanded AFR). These are targets to read a log
+#: against - cardiag reports whether a pull sits in the window; it does not
+#: write anything to the car.
+WOT_AFR_TARGET_LOW = 12.2
+WOT_AFR_TARGET_HIGH = 12.8
+#: Leaner than this at wide-open throttle is detonation territory on a naturally
+#: aspirated engine, the more so in heat.
+WOT_AFR_LEAN_LIMIT = 13.0
+#: Lambda 1.0 for pump gasoline, to turn an equivalence ratio into an AFR.
+STOICH_GASOLINE = 14.64
+
+#: Column names an external wideband might be logged under (AFR directly, then
+#: lambda). The car's own narrowband O2 is deliberately not used for this: it
+#: saturates rich at WOT and says nothing in the region a pull lives in.
+WIDEBAND_AFR_CHANNELS = ("WIDEBAND_AFR", "WBAFR", "AFR")
+WIDEBAND_LAMBDA_CHANNELS = ("WIDEBAND_LAMBDA", "WBLAMBDA", "LAMBDA")
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +245,21 @@ class Table:
         }
 
 
+def load_channel(samples: Sequence[Sample]) -> str:
+    """The load axis a pull table should bin against.
+
+    Manifold pressure is the truer load signal, so it wins where the log has it;
+    but a log that carries only calculated ENGINE_LOAD should still get a table
+    rather than none. Falls back to the MAP default when neither is present (so
+    build_table returns None honestly, rather than guessing an axis).
+    """
+    if any(s.get("INTAKE_PRESSURE") is not None for s in samples):
+        return "INTAKE_PRESSURE"
+    if any(s.get("ENGINE_LOAD") is not None for s in samples):
+        return "ENGINE_LOAD"
+    return "INTAKE_PRESSURE"
+
+
 def build_table(samples: Sequence[Sample], channel: str,
                 x_channel: str = "RPM",
                 y_channel: str = "INTAKE_PRESSURE",
@@ -353,19 +400,90 @@ def analyse_pull(pull: Pull) -> list[Observation]:
             [f"{len(pull.samples)} samples"],
         ))
 
+    found.extend(_observe_afr(pull))
     found.extend(_observe_timing(pull))
     found.extend(_observe_intake_temp(pull))
     found.extend(_observe_trims(pull))
     return found
 
 
-def _observe_timing(pull: Pull) -> list[Observation]:
-    """Timing pulled back as revs rise is the knock signature you can see.
+def _mean_series(pull: Pull, channel: str) -> float | None:
+    series = pull.series(channel)
+    # Drop non-finite samples (a CSV may carry NaN for a missing reading). A NaN
+    # left in would poison the mean and make every AFR threshold comparison fall
+    # through to "safe", reporting a missing reading as good - the worst failure
+    # for this analyser. Too few finite samples -> no observation.
+    values = [v for _, v in series if math.isfinite(v)]
+    if len(values) < 3:
+        return None
+    return sum(values) / len(values)
 
-    This car exposes no knock-retard PID, so the visible evidence is advance
-    falling while the engine is still accelerating under full throttle - the
-    ECU backing off because something told it to. It is a symptom, not a knock
-    count, and is reported as one.
+
+def _wideband_afr(pull: Pull) -> float | None:
+    """A logged wideband's mean AFR across the pull, if one is present."""
+    for name in WIDEBAND_AFR_CHANNELS:
+        mean = _mean_series(pull, name)
+        if mean is not None:
+            return mean
+    for name in WIDEBAND_LAMBDA_CHANNELS:
+        mean = _mean_series(pull, name)
+        if mean is not None:
+            return mean * STOICH_GASOLINE
+    return None
+
+
+def _observe_afr(pull: Pull) -> list[Observation]:
+    """Air/fuel at wide-open throttle, read against the safe window.
+
+    A wideband, if it was logged, is the measurement. Otherwise the ECU's
+    commanded ratio (COMMANDED_EQUIV_RATIO) is reported as exactly what it is -
+    a target the car is aiming for, not a measurement of what it achieved - so a
+    reading is never dressed up as more than the log supports.
+    """
+    measured = _wideband_afr(pull)
+    if measured is not None:
+        afr, kind = measured, "measured"
+    else:
+        lam = _mean_series(pull, "COMMANDED_EQUIV_RATIO")
+        if lam is None:
+            return []
+        afr, kind = lam * STOICH_GASOLINE, "commanded"
+
+    window = f"{WOT_AFR_TARGET_LOW:.1f}-{WOT_AFR_TARGET_HIGH:.1f}:1"
+    evidence = [f"{kind} {afr:.1f}:1 at WOT", f"safe window {window}"]
+    unverified = ("" if kind == "measured" else " That is what the ECU is "
+                  "targeting, not what it burned - a wideband is the only way to "
+                  "confirm it.")
+
+    if afr >= WOT_AFR_LEAN_LIMIT:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR at wide-open throttle is "
+            f"{afr:.1f}:1, leaner than the {window} safe window. Lean at WOT is "
+            "detonation territory, the more so in the heat; the safe direction is "
+            "more fuel." + unverified, "serious", evidence)]
+    if afr > WOT_AFR_TARGET_HIGH:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, a little lean of "
+            f"the {window} window. A touch more fuel is the safe way to move it."
+            + unverified, "advisory", evidence)]
+    if afr >= WOT_AFR_TARGET_LOW:
+        return [Observation(
+            "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, inside the "
+            f"{window} safe window." + unverified, "good", evidence)]
+    return [Observation(
+        "Air/fuel", f"{kind.capitalize()} AFR is {afr:.1f}:1, richer than the "
+        f"{window} window - safe, but leaving a little power on the table."
+        + unverified, "info", evidence)]
+
+
+def _observe_timing(pull: Pull) -> list[Observation]:
+    """Advance falling as revs rise - what a knock-retard event would look like.
+
+    This car exposes no knock-retard PID, so the only visible evidence is spark
+    advance coming down while the engine is still pulling. But a WOT spark table
+    normally tapers advance as RPM and load climb, so a fall on its own cannot be
+    told apart from knock correction. It is reported as an observation to
+    correlate, never as a confirmed knock event.
     """
     series = pull.series("TIMING_ADVANCE")
     if len(series) < 6:
@@ -383,15 +501,20 @@ def _observe_timing(pull: Pull) -> list[Observation]:
 
     if drop >= 6.0:
         return [Observation(
-            "Timing", f"Advance fell {drop:.1f} degrees during the pull after "
-            "peaking. On this engine that usually means the ECU is pulling "
-            "timing - worth checking fuel grade and intake temperature before "
-            "reading anything else into it.",
-            "serious", evidence)]
+            "Timing", f"Advance fell {drop:.1f} degrees after peaking during the "
+            "pull. The timing trace alone can't say why: a WOT spark table "
+            "tapers advance as RPM and load rise, and knock retard would look "
+            "the same here. Correlate it before reading knock into it - a smooth "
+            "fall that tracks RPM and load looks like the table, a sharp or "
+            "load-triggered drop looks more like retard, and if it is retard, "
+            "fuel grade and intake temperature are where to look.",
+            "moderate", evidence)]
     if drop >= 3.0:
         return [Observation(
             "Timing", f"Advance eased back {drop:.1f} degrees late in the pull. "
-            "Small, but it is the direction knock retard moves in.",
+            "Most likely the spark table coming down with RPM and load, but it "
+            "is also the direction knock retard moves - the trace can't tell the "
+            "two apart.",
             "advisory", evidence)]
     return [Observation(
         "Timing", f"Advance held within {drop:.1f} degrees of its peak through "

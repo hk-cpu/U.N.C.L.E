@@ -12,6 +12,10 @@ from . import __version__, baseline as baseline_module, canbus, console, dtc, el
 from . import mode06
 from . import pids, vehicles, vin as vin_module
 from . import report as report_module
+from . import tuning as tuning_module
+from . import xdf as xdf_module
+from . import canframes as canframes_module
+from . import sensors as sensors_module
 from .dashboard import Dashboard
 from .elm327 import ObdError
 from .logger import open_logger
@@ -118,6 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="PIDs to watch (names or hex); default is everything useful")
     live.add_argument("--log", metavar="FILE",
                       help="record samples to a .csv or .db file while watching")
+    live.add_argument("--tune", action="store_true",
+                      help="watch the channels a tuner reads off a pull "
+                           "(pair with --log, then analyse with 'cardiag pull')")
     live.add_argument("--duration", type=float,
                       help="stop after this many seconds")
     live.add_argument("--refresh", type=float, default=0.2,
@@ -125,6 +132,49 @@ def build_parser() -> argparse.ArgumentParser:
 
     read = sub.add_parser("read", help="read specific PIDs once")
     read.add_argument("pids", nargs="+", help="PID names or hex values")
+
+    pull = sub.add_parser(
+        "pull", help="analyse a recorded log the way a tuner reads one (no car)")
+    pull.add_argument("logfile", help="a CSV log, e.g. one from 'live --log'")
+    pull.add_argument("--channel", default="TIMING_ADVANCE",
+                      help="the channel to bin across RPM and load "
+                           "(default: TIMING_ADVANCE)")
+
+    sensor = sub.add_parser(
+        "sensor", help="sensor transfer functions for bench testing (no car)")
+    sensor.add_argument("kind", choices=("temp", "injector"),
+                        help="temp: ECT/IAT thermistor; injector: flow and power")
+    sensor.add_argument("--ohms", type=float, help="temp: measured resistance")
+    sensor.add_argument("--celsius", type=float, help="temp: a temperature to look up")
+    sensor.add_argument("--flow", type=float,
+                        help="injector: rated flow lb/hr (default: stock 27.5)")
+    sensor.add_argument("--from-psi", type=float, dest="from_psi",
+                        help="injector: the pressure the flow is rated at (default 43.5)")
+    sensor.add_argument("--psi", type=float,
+                        help="injector: actual rail pressure (default 58)")
+    sensor.add_argument("--duty", type=float, help="injector: max duty cycle (default 0.80)")
+    sensor.add_argument("--bsfc", type=float, help="injector: BSFC (default 0.50)")
+
+    framesp = sub.add_parser(
+        "frames", help="annotate a raw CAN-C capture against the frame map (no car)")
+    framesp.add_argument("capture", nargs="?",
+                         help="a candump / SavvyCAN capture; omit with --list")
+    framesp.add_argument("--list", action="store_true", dest="list_frames",
+                         help="list the known CAN-C broadcast frames")
+    framesp.add_argument("--id", metavar="ID",
+                         help="show each frame of one ID (e.g. 0x312), not a summary")
+
+    binp = sub.add_parser(
+        "bin", help="view a calibration bin against an XDF, read-only (no car)")
+    binp.add_argument("binfile", help="a calibration bin dump you already have")
+    binp.add_argument("xdf", help="a TunerPro XDF written for this bin's OSID")
+    binp.add_argument("--list", action="store_true", dest="list_tables",
+                      help="list the tables and constants the XDF defines")
+    binp.add_argument("--table", metavar="NAME",
+                      help="show one table or constant by its title")
+    binp.add_argument("--little-endian", action="store_true",
+                      help="decode little-endian (default is big-endian, which "
+                           "is correct for this car's PowerPC NGC)")
 
     listing = sub.add_parser("pids", help="list the PIDs this car supports")
     listing.add_argument("--all", action="store_true",
@@ -234,6 +284,14 @@ def _run(argv: list[str] | None) -> int:
         return _command_vehicle(args, session=None)
     if command == "canbus":
         return _command_canbus(args)
+    if command == "pull":
+        return _command_pull(args)
+    if command == "sensor":
+        return _command_sensor(args)
+    if command == "frames":
+        return _command_frames(args)
+    if command == "bin":
+        return _command_bin(args)
     if command in ("ui", "app"):
         # The UI manages its own connection, so it does not take one from here.
         return _command_ui(args, app_window=command == "app")
@@ -560,9 +618,23 @@ def _command_clear(args: argparse.Namespace, session: Session) -> int:
 
 
 def _command_live(args: argparse.Namespace, session: Session) -> int:
+    names = args.pids or None
+    if getattr(args, "tune", False) and not names:
+        # The tuner's channel set, minus any this car does not answer, so the
+        # log that 'cardiag pull' reads back has load, timing and trims in it.
+        # Build the supported set from every advertised PID, not live_pids()
+        # (which is dashboard_order and drops priority-0 PIDs): the commanded
+        # equivalence ratio the AFR analysis needs is one of those, so filtering
+        # on the dashboard set would silently leave it out of the log.
+        supported = {pids.BY_PID[p].name
+                     for p in session.supported_pids if p in pids.BY_PID}
+        names = [name for name in tuning_module.LOG_CHANNELS if name in supported]
+        if not names:
+            return _fail("this car did not advertise any of the tuning channels.")
+
     dashboard = Dashboard.for_session(
         session,
-        names=args.pids or None,
+        names=names,
         refresh=args.refresh,
     )
 
@@ -913,7 +985,48 @@ def _command_calibration(args: argparse.Namespace, session: Session) -> int:
         "This identifies the software running in the ECU. Save it with "
         "'cardiag baseline' before you change anything: if it differs later, "
         "the module was reflashed.", indent="  "))
+
+    if ids:
+        print()
+        print(console.heading("Matching a tune to this calibration"))
+        for line in _calibration_match_notes(ids):
+            print(console.wrap(line, indent="  "))
+            print()
     return 0
+
+
+def _calibration_match_notes(ids: list[str]) -> list[str]:
+    """What the calibration ID is for when you go to tune the car.
+
+    Factual and model-specific where it can be, without inventing table maps:
+    the ID here is the OSID a tuning definition has to match, and nothing more
+    is claimed than the ECU reported.
+    """
+    notes = [
+        "The calibration ID above is the OSID — the exact software build in "
+        "your PCM. Any tuning definition has to match it: HP Tuners selects "
+        "its own licensed definitions from it automatically, and a TunerPro "
+        "XDF must be the one written for this OSID. A definition meant for a "
+        "different build reads and writes the wrong addresses and corrupts the "
+        "file, so matching this ID is the first real step of a tune.",
+    ]
+    if any(_looks_like_chrysler_part(code) for code in ids):
+        notes.append(
+            "On a 2006 LX HEMI this is a Chrysler part number (the 04896405 "
+            "family), where the trailing letters are the calibration revision. "
+            "Quote the whole string, suffix included, when you look for a "
+            "matching definition.")
+    notes.append(
+        "cardiag reads and logs; it does not write the calibration. Editing it "
+        "needs a flashing tool (HP Tuners MPVI, a PCM-flash/BDM rig), and "
+        "`cardiag bin` can show the tables of a bin you already have against "
+        "an XDF you supply — read-only.")
+    return notes
+
+
+def _looks_like_chrysler_part(code: str) -> bool:
+    cleaned = code.strip().upper()
+    return cleaned.startswith("04896405") or cleaned.startswith("P04896405")
 
 
 def _open_store(args: argparse.Namespace):
@@ -1174,26 +1287,7 @@ def _command_canbus(args: argparse.Namespace) -> int:
     category = getattr(args, "category", None)
 
     if args.json:
-        payload = {
-            "diag_request_id": canbus.DIAG_REQUEST_ID,
-            "diag_response_id": canbus.DIAG_RESPONSE_ID,
-            "buses": [
-                {"name": b.name, "speed_kbps": b.speed_kbps,
-                 "standard": b.standard, "where": b.where, "access": b.access}
-                for b in canbus.BUSES
-            ],
-            "dlc_pins": [
-                {"pin": p.pin, "function": p.function, "note": p.note}
-                for p in canbus.DLC_PINS
-            ],
-            "circuits": [
-                {"circuit": c.circuit, "connector": c.connector, "pin": c.pin,
-                 "color": c.color, "function": c.function,
-                 "category": c.category, "pid": c.pid, "note": c.note}
-                for c in canbus.circuits(category)
-            ],
-        }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(canbus.as_dict(category), indent=2))
         return 0
 
     print(console.paint("CAN bus and wiring map", "bold"))
@@ -1237,7 +1331,531 @@ def _command_canbus(args: argparse.Namespace) -> int:
                 print(console.wrap(console.paint(
                     f"{circuit.location}: {circuit.note}", "dim")))
         print()
+
+    if category is None:
+        print(console.heading("Chassis grounding points (G100-G304)"))
+        rows = [(g.name, g.location, g.serves) for g in canbus.grounds()]
+        print(console.table(rows, headers=("point", "where", "shares it with")))
+        for g in canbus.grounds():
+            if g.note:
+                print(console.wrap(console.paint(f"{g.name}: {g.note}", "dim")))
+        print(console.wrap(console.paint(
+            f"A healthy module ground measures {canbus.GROUND_SPEC}.", "dim")))
+        print()
+
+        print(console.heading("Key fuses (powertrain & diagnostic feeds)"))
+        for panel in (canbus.IPM, canbus.PDC):
+            panel_fuses = canbus.fuses(panel)
+            if not panel_fuses:
+                continue
+            print(f" {console.paint(panel, 'bold')}")
+            rows = [(f.position, f.rating, f.feeds) for f in panel_fuses]
+            print(console.table(rows, headers=("fuse", "rating", "feeds")))
+            for f in panel_fuses:
+                if f.note:
+                    print(console.wrap(console.paint(
+                        f"{f.position}: {f.note}", "dim")))
+            print()
     return 0
+
+
+def _command_pull(args: argparse.Namespace) -> int:
+    """Read a recorded log and report what a tuner reads off its pulls."""
+    import csv
+
+    try:
+        with open(args.logfile, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError as exc:
+        return _fail(f"could not read {args.logfile}: {exc.strerror or exc}")
+
+    samples = tuning_module.samples_from_rows(rows)
+    if not samples:
+        return _fail(
+            f"{args.logfile} has no usable samples. A log needs a timestamp "
+            "column and numeric channels - record one with, e.g.,\n"
+            "  cardiag live RPM INTAKE_PRESSURE THROTTLE_POS TIMING_ADVANCE "
+            "--log pull.csv")
+
+    channel = args.channel.strip().upper()
+    # Bin against manifold pressure where the log has it, else calculated load,
+    # so a log without MAP still gets an RPM x load table instead of none.
+    table = tuning_module.build_table(
+        samples, channel, y_channel=tuning_module.load_channel(samples))
+    pulls = tuning_module.find_pulls(samples)
+
+    if args.json:
+        print(json.dumps({
+            "file": args.logfile,
+            "samples": len(samples),
+            "channel": channel,
+            "table": table.to_dict() if table else None,
+            "pulls": [
+                {
+                    "index": index,
+                    "seconds": round(pull.seconds, 1),
+                    "rpm_range": list(pull.rpm_range) if pull.rpm_range else None,
+                    "observations": [obs.to_dict()
+                                     for obs in tuning_module.analyse_pull(pull)],
+                }
+                for index, pull in enumerate(pulls)
+            ],
+        }, indent=2))
+        return 0
+
+    print(console.paint(f"Pull analysis of {args.logfile}", "bold"))
+    print(console.paint(f"{len(samples)} samples", "dim"))
+    print()
+
+    print(console.heading("Wide-open pulls"))
+    if not pulls:
+        print(console.wrap(
+            "No wide-open pull found. A pull is full throttle with the revs "
+            "climbing for more than a second or so - this log has none."))
+    for index, pull in enumerate(pulls, start=1):
+        low, high = pull.rpm_range or (0, 0)
+        print(f" {console.paint(f'Pull {index}', 'bold')}  "
+              f"{pull.seconds:.1f}s, {low:.0f}-{high:.0f} rpm")
+        for obs in tuning_module.analyse_pull(pull):
+            mark = console.SEVERITY_MARK.get(obs.severity, " -")
+            print(f"   {console.severity(mark, obs.severity)} "
+                  f"{console.paint(obs.topic, 'bold')}: {obs.detail}")
+            for line in obs.evidence:
+                print(console.paint(f"       {line}", "dim"))
+        print()
+
+    print(console.heading(f"{channel} across RPM and load"))
+    if table is None:
+        print(console.wrap(
+            f"This log does not contain {channel}, so there is no table to "
+            "draw - it was not among the recorded channels."))
+    else:
+        _print_table(table)
+    return 0
+
+
+def _print_table(table) -> None:
+    """Render a tuning Table as aligned text, high load at the top."""
+    data = table.to_dict()
+    cells = {(cell["x"], cell["y"]): cell for cell in data["cells"]}
+
+    header = ("load \\ rpm", *data["x_labels"])
+    rows = []
+    for iy in range(len(data["y_labels"]) - 1, -1, -1):
+        row = [data["y_labels"][iy]]
+        for ix in range(len(data["x_labels"])):
+            cell = cells.get((ix, iy))
+            if cell is None:
+                row.append("")
+            elif cell["mean"] is None:
+                row.append("·")           # seen, but too few samples to average
+            else:
+                row.append(f"{cell['mean']:.1f}")
+        rows.append(tuple(row))
+    print(console.table(rows, headers=header))
+    print(console.paint(
+        f"  {data['visited']} cell(s) with at least "
+        f"{data['min_cell_samples']} samples; · means too few to average.",
+        "dim"))
+
+
+def _command_sensor(args: argparse.Namespace) -> int:
+    """Sensor transfer-function lookups for bench testing. Needs no car."""
+    if args.kind == "temp":
+        return _sensor_temp(args)
+    return _sensor_injector(args)
+
+
+def _sensor_temp(args: argparse.Namespace) -> int:
+    if args.ohms is None and args.celsius is None:
+        return _fail("give --ohms (to read a temperature) or --celsius "
+                     "(to get the expected resistance).")
+
+    results = []
+    if args.ohms is not None:
+        look = sensors_module.temp_from_resistance(args.ohms)
+        results.append(("temperature", f"{look.value:.0f} degC "
+                        f"({sensors_module.c_to_f(look.value):.0f} degF)",
+                        look.extrapolated, f"at {args.ohms:g} ohms"))
+    if args.celsius is not None:
+        look = sensors_module.resistance_from_temp(args.celsius)
+        results.append(("resistance", f"{look.value:,.0f} ohms",
+                        look.extrapolated, f"at {args.celsius:g} degC"))
+
+    if args.json:
+        print(json.dumps([
+            {"quantity": q, "value": v, "input": i, "extrapolated": e}
+            for q, v, e, i in results], indent=2))
+        return 0
+
+    print(console.paint("ECT / IAT thermistor (shared NTC curve)", "bold"))
+    print()
+    print(console.table([(q, v + (f"  {i}")) for q, v, _e, i in results]))
+    if any(e for _q, _v, e, _i in results):
+        print()
+        print(console.wrap("One value fell outside the tabulated range, so it is "
+                           "an extrapolation, not a reading off the curve.",
+                           indent="  "))
+    return 0
+
+
+def _sensor_injector(args: argparse.Namespace) -> int:
+    flow_rated = args.flow if args.flow is not None else sensors_module.STOCK_INJECTOR_LBHR
+    from_psi = args.from_psi if args.from_psi is not None else sensors_module.INJECTOR_TEST_PSI
+    psi = args.psi if args.psi is not None else sensors_module.RAIL_PSI
+    duty = args.duty if args.duty is not None else 0.80
+    bsfc = args.bsfc if args.bsfc is not None else 0.50
+
+    flow = sensors_module.injector_flow(flow_rated, from_psi, psi)
+    bhp = sensors_module.max_bhp(flow, duty=duty, bsfc=bsfc)
+
+    if args.json:
+        print(json.dumps({
+            "rated_flow_lbhr": flow_rated, "rated_at_psi": from_psi,
+            "rail_psi": psi, "effective_flow_lbhr": round(flow, 2),
+            "max_bhp": round(bhp, 0), "duty": duty, "bsfc": bsfc,
+        }, indent=2))
+        return 0
+
+    print(console.paint("Fuel injector flow and power", "bold"))
+    print()
+    print(console.table([
+        ("rated", f"{flow_rated:g} lb/hr at {from_psi:g} psi"),
+        ("at rail pressure", f"{flow:.1f} lb/hr at {psi:g} psi"),
+        (f"supports (8 cyl, {duty:.0%} duty, {bsfc:.2f} BSFC)", f"~{bhp:.0f} BHP"),
+    ]))
+    return 0
+
+
+def _command_frames(args: argparse.Namespace) -> int:
+    """Annotate a raw CAN-C capture against the broadcast frame map. Read-only."""
+    if args.list_frames or not args.capture:
+        return _frames_list(args)
+
+    try:
+        with open(args.capture, "r", encoding="utf-8", errors="replace") as handle:
+            parsed = _parse_can_capture(handle.read())
+    except OSError as exc:
+        return _fail(f"could not read {args.capture}: {exc.strerror or exc}")
+    if not parsed:
+        return _fail(f"no CAN frames found in {args.capture}. Expected candump "
+                     "(ID#DATA) or SavvyCAN CSV.")
+
+    if args.id:
+        try:
+            wanted = int(args.id, 16)
+        except ValueError:
+            return _fail(f"not a CAN id: {args.id!r}")
+        return _frames_one_id(args, parsed, wanted)
+    return _frames_summary(args, parsed)
+
+
+def _parse_can_capture(text: str):
+    """Parse candump (``ID#DATA``) or SavvyCAN CSV into (ts, id, data) tuples."""
+    import re
+
+    lines = text.splitlines()
+    if lines and "," in lines[0] and "id" in lines[0].lower():
+        return _parse_savvycan(lines)
+
+    pattern = re.compile(
+        r"(?:\(([\d.]+)\)\s+\S+\s+)?([0-9A-Fa-f]{1,8})#([0-9A-Fa-f]*)")
+    out = []
+    for line in lines:
+        match = pattern.search(line)
+        if not match:
+            continue
+        ts = float(match.group(1)) if match.group(1) else None
+        hexdata = match.group(3)
+        if len(hexdata) % 2:
+            continue
+        out.append((ts, int(match.group(2), 16), bytes.fromhex(hexdata)))
+    return out
+
+
+def _parse_savvycan(lines):
+    out = []
+    for line in lines[1:]:
+        cells = [c.strip() for c in line.split(",")]
+        if len(cells) < 7:
+            continue
+        try:
+            ts = float(cells[0]) if cells[0] else None
+            can_id = int(cells[1], 16)
+            length = int(cells[5])
+            data = bytes(int(cells[6 + i], 16) for i in range(length)
+                         if 6 + i < len(cells))
+        except (ValueError, IndexError):
+            continue
+        out.append((ts, can_id, data))
+    return out
+
+
+def _frames_list(args: argparse.Namespace) -> int:
+    known = canframes_module.frames()
+    if args.json:
+        print(json.dumps({
+            "frames": [
+                {"id": f.code, "name": f.name, "hz": f.hz, "dlc": f.dlc,
+                 "confidence": f.confidence,
+                 "signals": [{"name": s.name, "start_byte": s.start_byte,
+                              "length": s.length, "signed": s.signed, "note": s.note}
+                             for s in f.signals]}
+                for f in known],
+            "diagnostic_ids": {f"0x{k:03X}": v
+                               for k, v in canframes_module.DIAGNOSTIC_IDS.items()},
+        }, indent=2))
+        return 0
+
+    print(console.paint("CAN-C broadcast frames (500 kbps)", "bold"))
+    print(console.paint("reverse-engineered; raw values only, no verified scaling",
+                        "dim"))
+    print()
+    print(console.table(
+        [(f.code, f.name, f"{f.hz:g} Hz", str(f.dlc), f.confidence) for f in known],
+        headers=("id", "frame", "rate", "dlc", "confidence")))
+    print()
+    for frame in known:
+        if frame.signals:
+            bits = ", ".join(
+                f"{s.name} @ byte {s.start_byte}"
+                + (f"-{s.start_byte + s.length - 1}" if s.length > 1 else "")
+                for s in frame.signals)
+            print(console.wrap(f"{frame.code}: {bits}", indent="  "))
+    return 0
+
+
+def _frames_summary(args: argparse.Namespace, parsed) -> int:
+    by_id: dict[int, list] = {}
+    for ts, can_id, _data in parsed:
+        by_id.setdefault(can_id, []).append(ts)
+
+    def rate(times):
+        stamps = [t for t in times if t is not None]
+        if len(stamps) < 2:
+            return None
+        span = max(stamps) - min(stamps)
+        # N frames span N-1 intervals between first and last, so the cadence is
+        # (N-1)/span. Using N/span inflates it (three 75 Hz frames -> 112.5 Hz).
+        return (len(stamps) - 1) / span if span > 0 else None
+
+    rows = []
+    for can_id in sorted(by_id):
+        ann = canframes_module.annotate(can_id, b"")
+        hz = rate(by_id[can_id])
+        rows.append({
+            "id": f"0x{can_id:03X}", "name": ann.name, "count": len(by_id[can_id]),
+            "hz": round(hz, 1) if hz else None, "known": ann.known,
+            "confidence": ann.confidence,
+        })
+
+    if args.json:
+        print(json.dumps({"total_frames": len(parsed), "ids": rows}, indent=2))
+        return 0
+
+    print(console.paint(f"{len(parsed)} frames, {len(by_id)} distinct IDs", "bold"))
+    print()
+    print(console.table(
+        [(r["id"], r["name"], str(r["count"]),
+          f"{r['hz']:g} Hz" if r["hz"] else "-", r["confidence"] or "-")
+         for r in rows],
+        headers=("id", "frame", "count", "~rate", "confidence")))
+    unknown = sum(1 for r in rows if not r["known"])
+    if unknown:
+        print()
+        print(console.wrap(
+            f"{unknown} ID(s) are not in the frame map. Show one over time with "
+            "--id <ID> and correlate it against a diagnostic reading to work out "
+            "what it carries.", indent="  "))
+    return 0
+
+
+def _frames_one_id(args: argparse.Namespace, parsed, wanted: int) -> int:
+    hits = [(ts, data) for ts, can_id, data in parsed if can_id == wanted]
+    if not hits:
+        return _fail(f"no frames with id 0x{wanted:03X} in the capture.")
+
+    base = next((ts for ts, _ in hits if ts is not None), None)
+
+    if args.json:
+        out = []
+        for ts, data in hits:
+            ann = canframes_module.annotate(wanted, data)
+            out.append({
+                "t": round(ts - base, 4) if (ts is not None and base is not None)
+                else None,
+                "data": data.hex(),
+                "readings": [r.to_dict() for r in ann.readings],
+            })
+        print(json.dumps({"id": f"0x{wanted:03X}", "frames": out}, indent=2))
+        return 0
+
+    sample = canframes_module.annotate(wanted, b"")
+    print(console.paint(f"0x{wanted:03X}  {sample.name}", "bold"))
+    if sample.note:
+        print(console.wrap(sample.note, indent="  "))
+    print(console.paint("raw values only - no scaling is applied", "dim"))
+    print()
+    for ts, data in hits[:40]:
+        when = f"{ts - base:7.3f}s" if (ts is not None and base is not None) else ""
+        ann = canframes_module.annotate(wanted, data)
+        raws = "  ".join(f"{r.name}={r.raw}" for r in ann.readings) or data.hex()
+        print(f"  {when}  {data.hex():<18} {raws}")
+    if len(hits) > 40:
+        print(console.paint(f"  ... {len(hits) - 40} more", "dim"))
+    return 0
+
+
+def _command_bin(args: argparse.Namespace) -> int:
+    """Display a calibration bin against a user-supplied XDF. Read-only."""
+    try:
+        with open(args.binfile, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        return _fail(f"could not read {args.binfile}: {exc.strerror or exc}")
+    try:
+        with open(args.xdf, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError as exc:
+        return _fail(f"could not read {args.xdf}: {exc.strerror or exc}")
+
+    try:
+        definition = xdf_module.parse_xdf(text)
+    except xdf_module.XdfError as exc:
+        return _fail(str(exc))
+
+    big_endian = not args.little_endian
+
+    if args.table and not args.list_tables:
+        item = definition.find(args.table)
+        if item is None:
+            return _fail(f"no table or constant titled {args.table!r}. "
+                         "Run with --list to see the titles.")
+        try:
+            if isinstance(item, xdf_module.Constant):
+                return _bin_constant(args, definition, item, data, big_endian)
+            return _bin_table(args, definition, item, data, big_endian)
+        except xdf_module.XdfError as exc:
+            return _fail(str(exc))
+
+    return _bin_list(args, definition, data)
+
+
+def _bin_list(args: argparse.Namespace, definition, data: bytes) -> int:
+    tables = definition.tables
+    constants = definition.constants
+
+    if args.json:
+        print(json.dumps({
+            "bin_bytes": len(data),
+            "base_offset": definition.base_offset,
+            "tables": [
+                {"title": t.title, "address": t.z.embedded.address,
+                 "rows": t.z.embedded.rows, "cols": t.z.embedded.cols,
+                 "size_bits": t.z.embedded.size_bits, "units": t.units,
+                 "equation": t.z.scaling.equation}
+                for t in tables],
+            "constants": [
+                {"title": c.title, "address": c.embedded.address,
+                 "size_bits": c.embedded.size_bits, "units": c.units,
+                 "equation": c.scaling.equation}
+                for c in constants],
+        }, indent=2))
+        return 0
+
+    print(console.paint(f"{args.xdf}", "bold"))
+    print(console.paint(f"against {args.binfile} ({len(data)} bytes) — read-only",
+                        "dim"))
+    print()
+    if tables:
+        print(console.heading(f"Tables ({len(tables)})"))
+        print(console.table([
+            (t.title, f"{t.z.embedded.rows}x{t.z.embedded.cols}",
+             f"0x{t.z.embedded.address:X}", f"{t.z.embedded.size_bits}-bit",
+             t.units or "-")
+            for t in tables], headers=("title", "size", "address", "width", "units")))
+        print()
+    if constants:
+        print(console.heading(f"Constants ({len(constants)})"))
+        print(console.table([
+            (c.title, f"0x{c.embedded.address:X}",
+             f"{c.embedded.size_bits}-bit", c.units or "-")
+            for c in constants], headers=("title", "address", "width", "units")))
+        print()
+    print(console.wrap(
+        "Show one with:  cardiag bin <bin> <xdf> --table \"<title>\". Values are "
+        "read from your bin using your XDF; cardiag does not check the XDF "
+        "matches the bin's OSID, and it never writes.", indent="  "))
+    return 0
+
+
+def _bin_header(args: argparse.Namespace, view_or_units: str, big_endian: bool,
+                equation: str, parsed: bool) -> None:
+    order = "big-endian" if big_endian else "little-endian"
+    note = f"decoded {order}, equation '{equation}'"
+    if not parsed:
+        note += " (not understood — showing the raw integer)"
+    print(console.paint(note, "dim"))
+
+
+def _bin_table(args: argparse.Namespace, definition, table, data: bytes,
+               big_endian: bool) -> int:
+    view = xdf_module.view_table(definition, table, data, big_endian)
+
+    if args.json:
+        print(json.dumps(view.to_dict(), indent=2))
+        return 0
+
+    print(console.paint(view.title, "bold")
+          + (f"  ({view.units})" if view.units else ""))
+    _bin_header(args, view.units, big_endian, view.equation, view.equation_parsed)
+    print()
+
+    decimals = table.z.scaling.decimals
+    header = ("load \\ x", *view.x_labels) if len(view.cells) > 1 else \
+        ("x", *view.x_labels)
+    rows = []
+    for iy, row in enumerate(view.cells):
+        label = view.y_labels[iy] if iy < len(view.y_labels) else str(iy)
+        rows.append((label, *[_format_cell(v, decimals) for v in row]))
+    print(console.table(rows, headers=header))
+    return 0
+
+
+def _bin_constant(args: argparse.Namespace, definition, constant, data: bytes,
+                  big_endian: bool) -> int:
+    grid = xdf_module.read_block(definition, constant.embedded, data,
+                                 constant.scaling, big_endian)
+    value = grid[0][0]
+
+    if args.json:
+        import math
+        json_value = None if isinstance(value, float) and math.isnan(value) \
+            else value          # undefined -> null, never a fabricated number
+        print(json.dumps({
+            "title": constant.title, "value": json_value, "units": constant.units,
+            "equation": constant.scaling.equation,
+            "equation_parsed": constant.scaling.parsable,
+            "byte_order": "big-endian" if big_endian else "little-endian",
+        }, indent=2))
+        return 0
+
+    print(console.paint(constant.title, "bold"))
+    _bin_header(args, constant.units, big_endian, constant.scaling.equation,
+                constant.scaling.parsable)
+    print()
+    rendered = _format_cell(value, constant.scaling.decimals)
+    print(console.table([("value", f"{rendered} {constant.units}".strip())]))
+    return 0
+
+
+def _format_cell(value, decimals: int) -> str:
+    if isinstance(value, int):
+        return str(value)
+    import math
+    if math.isnan(value):
+        return "undef"          # the scaling equation is undefined here (e.g. 1/0)
+    return f"{value:.{decimals}f}"
 
 
 def _command_vin(args: argparse.Namespace, session: Session | None) -> int:
