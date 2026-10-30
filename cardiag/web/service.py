@@ -371,7 +371,12 @@ class VehicleService:
         """Live sampling of the channels a pull is read from."""
         with self._lock:
             session = self._require()
-            supported = {entry.name for entry in session.live_pids()}
+            # Build from every advertised PID, not live_pids() (dashboard_order,
+            # which drops priority-0 PIDs): COMMANDED_EQUIV_RATIO is priority 0,
+            # and the AFR analysis needs it, so the dashboard set would filter it
+            # back out even though it is in TUNING_CHANNELS.
+            supported = {pids.BY_PID[p].name
+                         for p in session.supported_pids if p in pids.BY_PID}
             wanted = [name for name in TUNING_CHANNELS if name in supported]
         return self.start_live(wanted or None)
 

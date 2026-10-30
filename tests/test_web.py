@@ -21,6 +21,24 @@ def test_browser_tuning_captures_commanded_ratio_for_afr():
     assert "COMMANDED_EQUIV_RATIO" in TUNING_CHANNELS
 
 
+def test_browser_tuning_selects_priority_zero_pids_from_all_advertised():
+    # Listing the ratio in TUNING_CHANNELS is not enough: start_tuning must
+    # select from every advertised PID, not live_pids() (dashboard_order, which
+    # drops priority-0 PIDs). A stub car advertising 0x44 proves the ratio is
+    # kept rather than filtered back out.
+    from cardiag import pids
+
+    class _StubSession:
+        supported_pids = {0x0C, 0x44}          # RPM + commanded ratio (priority 0)
+
+    svc = VehicleService()
+    svc._session = _StubSession()
+    captured = {}
+    svc.start_live = lambda names=None: captured.setdefault("names", names) or {}
+    svc.start_tuning()
+    assert "COMMANDED_EQUIV_RATIO" in captured["names"]
+
+
 # ---------------------------------------------------------------------------
 # Service layer
 # ---------------------------------------------------------------------------
