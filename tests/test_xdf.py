@@ -217,3 +217,13 @@ def test_sub_byte_and_non_byte_aligned_widths_are_refused():
                            signed=False)
         with pytest.raises(xdf.XdfError):
             xdf.read_block(xdf.Definition(), emb, b"\xAB\xCD", xdf.Scaling("X"))
+
+
+def test_embedded_data_without_an_address_is_refused():
+    # A data block with no mmedaddress must not default to offset 0 and show bin
+    # byte 0 as a value - it is malformed and rejected.
+    from xml.etree import ElementTree
+    axis = ElementTree.fromstring(
+        '<XDFAXIS><EMBEDDEDDATA mmedelementsizebits="8"/></XDFAXIS>')
+    with pytest.raises(xdf.XdfError):
+        xdf._embedded(axis)

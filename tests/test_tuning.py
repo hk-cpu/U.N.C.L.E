@@ -402,3 +402,12 @@ def test_load_channel_prefers_manifold_pressure_when_present():
     samples = ramp(10, RPM=(1500, 5000), INTAKE_PRESSURE=(30, 95),
                    ENGINE_LOAD=(20, 90))
     assert tuning.load_channel(samples) == "INTAKE_PRESSURE"
+
+
+def test_nan_afr_samples_do_not_report_a_false_safe_reading():
+    # A log whose commanded-ratio samples are all NaN must not poison the mean
+    # and fall through to "richer than window - safe"; it yields no AFR reading.
+    pull = Pull(ramp(30, RPM=(1500, 5000), THROTTLE_POS=(90, 95),
+                     COMMANDED_EQUIV_RATIO=(float("nan"), float("nan")),
+                     TIMING_ADVANCE=(24, 22)))
+    assert "Air/fuel" not in topics(analyse_pull(pull))

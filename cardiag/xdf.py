@@ -287,6 +287,13 @@ def _embedded(axis_el) -> Embedded | None:
     data = axis_el.find("EMBEDDEDDATA")
     if data is None:
         return None
+    if data.get("mmedaddress") in (None, ""):
+        # A data block with no address is malformed. Defaulting it to 0 would
+        # read bytes from the start of the bin and present them as a value, so
+        # refuse it rather than invent a location.
+        raise XdfError("an EMBEDDEDDATA block has no address (mmedaddress) - "
+                       "malformed XDF; cardiag will not read offset 0 and show "
+                       "it as a value.")
     flags = _int(data.get("mmedtypeflags"))
     return Embedded(
         address=_int(data.get("mmedaddress")),

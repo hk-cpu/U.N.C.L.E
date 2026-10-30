@@ -20,6 +20,7 @@ Two rules carried over from the rest of the project:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -408,9 +409,13 @@ def analyse_pull(pull: Pull) -> list[Observation]:
 
 def _mean_series(pull: Pull, channel: str) -> float | None:
     series = pull.series(channel)
-    if len(series) < 3:
+    # Drop non-finite samples (a CSV may carry NaN for a missing reading). A NaN
+    # left in would poison the mean and make every AFR threshold comparison fall
+    # through to "safe", reporting a missing reading as good - the worst failure
+    # for this analyser. Too few finite samples -> no observation.
+    values = [v for _, v in series if math.isfinite(v)]
+    if len(values) < 3:
         return None
-    values = [value for _, value in series]
     return sum(values) / len(values)
 
 
