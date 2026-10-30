@@ -211,8 +211,14 @@ def test_timing_pulled_back_hard_is_flagged():
                 + ramp(15, start=1.5, RPM=(3000, 5000), TIMING_ADVANCE=(26, 14)))
     timing = topics(analyse_pull(pull))["Timing"]
 
-    assert timing.severity == "serious"
+    # A big fall is flagged for attention, but the timing trace alone can't tell
+    # a normal spark-table taper from knock retard, so it is not asserted as
+    # knock ('serious') - it names both causes and says to correlate.
+    assert timing.severity == "moderate"
     assert "12.0 degrees" in timing.detail
+    detail = timing.detail.lower()
+    assert "table" in detail and "retard" in detail
+    assert "usually means" not in detail
 
 
 def test_a_small_timing_drop_is_only_advisory():

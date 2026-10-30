@@ -457,12 +457,13 @@ def _observe_afr(pull: Pull) -> list[Observation]:
 
 
 def _observe_timing(pull: Pull) -> list[Observation]:
-    """Timing pulled back as revs rise is the knock signature you can see.
+    """Advance falling as revs rise - what a knock-retard event would look like.
 
-    This car exposes no knock-retard PID, so the visible evidence is advance
-    falling while the engine is still accelerating under full throttle - the
-    ECU backing off because something told it to. It is a symptom, not a knock
-    count, and is reported as one.
+    This car exposes no knock-retard PID, so the only visible evidence is spark
+    advance coming down while the engine is still pulling. But a WOT spark table
+    normally tapers advance as RPM and load climb, so a fall on its own cannot be
+    told apart from knock correction. It is reported as an observation to
+    correlate, never as a confirmed knock event.
     """
     series = pull.series("TIMING_ADVANCE")
     if len(series) < 6:
@@ -480,15 +481,20 @@ def _observe_timing(pull: Pull) -> list[Observation]:
 
     if drop >= 6.0:
         return [Observation(
-            "Timing", f"Advance fell {drop:.1f} degrees during the pull after "
-            "peaking. On this engine that usually means the ECU is pulling "
-            "timing - worth checking fuel grade and intake temperature before "
-            "reading anything else into it.",
-            "serious", evidence)]
+            "Timing", f"Advance fell {drop:.1f} degrees after peaking during the "
+            "pull. The timing trace alone can't say why: a WOT spark table "
+            "tapers advance as RPM and load rise, and knock retard would look "
+            "the same here. Correlate it before reading knock into it - a smooth "
+            "fall that tracks RPM and load looks like the table, a sharp or "
+            "load-triggered drop looks more like retard, and if it is retard, "
+            "fuel grade and intake temperature are where to look.",
+            "moderate", evidence)]
     if drop >= 3.0:
         return [Observation(
             "Timing", f"Advance eased back {drop:.1f} degrees late in the pull. "
-            "Small, but it is the direction knock retard moves in.",
+            "Most likely the spark table coming down with RPM and load, but it "
+            "is also the direction knock retard moves - the trace can't tell the "
+            "two apart.",
             "advisory", evidence)]
     return [Observation(
         "Timing", f"Advance held within {drop:.1f} degrees of its peak through "
