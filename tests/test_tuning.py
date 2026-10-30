@@ -384,3 +384,21 @@ def test_a_logged_lambda_is_converted_to_afr():
 
 def test_no_afr_channel_means_no_afr_observation():
     assert _afr(_wot_pull(TIMING_ADVANCE=25.0)) is None
+
+
+def test_pull_table_uses_engine_load_when_map_is_absent():
+    # A log with calculated load but no manifold pressure should still get an
+    # RPM x load table, not none.
+    samples = ramp(30, RPM=(1500, 5000), ENGINE_LOAD=(20, 95),
+                   TIMING_ADVANCE=(24, 20))
+    assert tuning.load_channel(samples) == "ENGINE_LOAD"
+    table = tuning.build_table(samples, "TIMING_ADVANCE",
+                               y_channel=tuning.load_channel(samples))
+    assert table is not None
+    assert table.y_channel == "ENGINE_LOAD"
+
+
+def test_load_channel_prefers_manifold_pressure_when_present():
+    samples = ramp(10, RPM=(1500, 5000), INTAKE_PRESSURE=(30, 95),
+                   ENGINE_LOAD=(20, 90))
+    assert tuning.load_channel(samples) == "INTAKE_PRESSURE"

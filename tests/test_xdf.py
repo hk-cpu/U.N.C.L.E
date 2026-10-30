@@ -207,3 +207,13 @@ def test_a_negative_effective_address_is_refused_not_wrapped():
     emb = xdf.Embedded(address=0xFB, size_bits=8, rows=1, cols=1, signed=False)
     with pytest.raises(xdf.XdfError):
         xdf.read_block(definition, emb, bytes(range(32)), xdf.Scaling("X"))
+
+
+def test_sub_byte_and_non_byte_aligned_widths_are_refused():
+    # cardiag reads whole bytes; a 4- or 12-bit field decoded as a byte would be
+    # a wrong value, so it is refused rather than shown.
+    for bits in (4, 12):
+        emb = xdf.Embedded(address=0, size_bits=bits, rows=1, cols=1,
+                           signed=False)
+        with pytest.raises(xdf.XdfError):
+            xdf.read_block(xdf.Definition(), emb, b"\xAB\xCD", xdf.Scaling("X"))

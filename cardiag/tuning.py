@@ -244,6 +244,21 @@ class Table:
         }
 
 
+def load_channel(samples: Sequence[Sample]) -> str:
+    """The load axis a pull table should bin against.
+
+    Manifold pressure is the truer load signal, so it wins where the log has it;
+    but a log that carries only calculated ENGINE_LOAD should still get a table
+    rather than none. Falls back to the MAP default when neither is present (so
+    build_table returns None honestly, rather than guessing an axis).
+    """
+    if any(s.get("INTAKE_PRESSURE") is not None for s in samples):
+        return "INTAKE_PRESSURE"
+    if any(s.get("ENGINE_LOAD") is not None for s in samples):
+        return "ENGINE_LOAD"
+    return "INTAKE_PRESSURE"
+
+
 def build_table(samples: Sequence[Sample], channel: str,
                 x_channel: str = "RPM",
                 y_channel: str = "INTAKE_PRESSURE",

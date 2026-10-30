@@ -1378,7 +1378,10 @@ def _command_pull(args: argparse.Namespace) -> int:
             "--log pull.csv")
 
     channel = args.channel.strip().upper()
-    table = tuning_module.build_table(samples, channel)
+    # Bin against manifold pressure where the log has it, else calculated load,
+    # so a log without MAP still gets an RPM x load table instead of none.
+    table = tuning_module.build_table(
+        samples, channel, y_channel=tuning_module.load_channel(samples))
     pulls = tuning_module.find_pulls(samples)
 
     if args.json:

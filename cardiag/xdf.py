@@ -390,6 +390,14 @@ def read_block(definition: Definition, embedded: Embedded, data: bytes,
             "this XDF entry stores IEEE-754 floating-point values, which cardiag "
             "does not decode - it will not read the bytes as an integer and show "
             "a false number. View it in TunerPro instead.")
+    if embedded.size_bits <= 0 or embedded.size_bits % 8 != 0:
+        # TunerPro sizes elements in bits and allows sub-byte / non-byte-aligned
+        # widths. cardiag reads whole bytes only, so decoding a 4- or 12-bit
+        # field as a byte would show the wrong value - refuse it instead.
+        raise XdfError(
+            f"this XDF entry is {embedded.size_bits} bits wide - cardiag decodes "
+            "whole-byte integers only (8, 16, 24, 32...), not sub-byte or "
+            "non-byte-aligned fields. View it in TunerPro instead.")
     order = "big" if big_endian else "little"
     n = embedded.element_bytes
     base = _effective_address(definition, embedded.address)
