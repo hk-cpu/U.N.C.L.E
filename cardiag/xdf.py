@@ -25,6 +25,7 @@ Nothing here claims more than the two files it was given actually say.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from xml.etree import ElementTree
@@ -125,7 +126,12 @@ class _Parser:
             if op == "*":
                 node = (lambda a, b: lambda x: a(x) * b(x))(node, rhs)
             else:
-                node = (lambda a, b: lambda x: a(x) / b(x) if b(x) else 0.0)(node, rhs)
+                # A zero denominator makes the scaled value undefined. Return
+                # NaN, never a fabricated 0.0 - the viewer must not present an
+                # invented number as real calibration data. NaN propagates
+                # correctly through any further arithmetic.
+                node = (lambda a, b: lambda x: a(x) / b(x) if b(x) else
+                        float("nan"))(node, rhs)
         return node
 
     def _power(self):
@@ -404,6 +410,8 @@ def _axis_labels(definition: Definition, axis: Axis | None, count: int,
 def _fmt(value: float | int, decimals: int) -> str:
     if isinstance(value, int):
         return str(value)
+    if math.isnan(value):
+        return "undef"          # the equation is undefined here (e.g. 1/0)
     return f"{value:.{decimals}f}"
 
 
@@ -419,10 +427,14 @@ class TableView:
     big_endian: bool
 
     def to_dict(self) -> dict:
+        # An undefined cell (NaN) becomes JSON null, not the invalid literal NaN,
+        # and never a fabricated number.
+        cells = [[None if isinstance(v, float) and math.isnan(v) else v
+                  for v in row] for row in self.cells]
         return {
             "title": self.title, "units": self.units,
             "x_labels": self.x_labels, "y_labels": self.y_labels,
-            "cells": self.cells, "equation": self.equation,
+            "cells": cells, "equation": self.equation,
             "equation_parsed": self.equation_parsed,
             "byte_order": "big-endian" if self.big_endian else "little-endian",
         }

@@ -1627,7 +1627,9 @@ def _frames_summary(args: argparse.Namespace, parsed) -> int:
         if len(stamps) < 2:
             return None
         span = max(stamps) - min(stamps)
-        return len(stamps) / span if span > 0 else None
+        # N frames span N-1 intervals between first and last, so the cadence is
+        # (N-1)/span. Using N/span inflates it (three 75 Hz frames -> 112.5 Hz).
+        return (len(stamps) - 1) / span if span > 0 else None
 
     rows = []
     for can_id in sorted(by_id):
@@ -1819,8 +1821,11 @@ def _bin_constant(args: argparse.Namespace, definition, constant, data: bytes,
     value = grid[0][0]
 
     if args.json:
+        import math
+        json_value = None if isinstance(value, float) and math.isnan(value) \
+            else value          # undefined -> null, never a fabricated number
         print(json.dumps({
-            "title": constant.title, "value": value, "units": constant.units,
+            "title": constant.title, "value": json_value, "units": constant.units,
             "equation": constant.scaling.equation,
             "equation_parsed": constant.scaling.parsable,
             "byte_order": "big-endian" if big_endian else "little-endian",
@@ -1839,6 +1844,9 @@ def _bin_constant(args: argparse.Namespace, definition, constant, data: bytes,
 def _format_cell(value, decimals: int) -> str:
     if isinstance(value, int):
         return str(value)
+    import math
+    if math.isnan(value):
+        return "undef"          # the scaling equation is undefined here (e.g. 1/0)
     return f"{value:.{decimals}f}"
 
 

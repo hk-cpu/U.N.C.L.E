@@ -569,6 +569,16 @@ def test_frames_json(capsys, tmp_path):
     assert ids["0x999"]["known"] is False
 
 
+def test_frames_rate_uses_intervals_not_frame_count(capsys, tmp_path):
+    # 0x312 appears 3 times over a 0.065 s span, so the cadence is
+    # (3-1)/0.065 = ~30.8 Hz. The old count/span calc gave ~46.2 Hz.
+    cap = tmp_path / "cap.log"
+    cap.write_text(CANDUMP)
+    code, out = run(capsys, "--json", "frames", str(cap))
+    hz = {r["id"]: r["hz"] for r in json.loads(out)["ids"]}["0x312"]
+    assert 30.0 < hz < 31.0
+
+
 def test_frames_parses_savvycan_csv(capsys, tmp_path):
     cap = tmp_path / "cap.csv"
     cap.write_text(

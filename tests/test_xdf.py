@@ -6,6 +6,8 @@ equation or the address runs off the end, it says so rather than inventing a
 number.
 """
 
+import math
+
 import pytest
 
 from cardiag import xdf
@@ -152,3 +154,19 @@ def test_an_address_past_the_end_is_an_error_not_a_guess():
     with pytest.raises(xdf.XdfError):
         xdf.read_block(definition, definition.constants[0].embedded,
                        b"\x00\x00", definition.constants[0].scaling)
+
+
+def test_division_by_zero_is_undefined_not_a_fake_zero():
+    # An equation whose denominator hits zero must not present 0.0 as if it were
+    # a real scaled value - that is exactly the "invent a number" bug the project
+    # exists to avoid. It reads as undefined (NaN) and propagates.
+    fn = xdf.compile_equation("1/X")
+    assert fn(2) == pytest.approx(0.5)
+    assert math.isnan(fn(0))
+    assert math.isnan(xdf.Scaling("1/X").apply(0))
+
+
+def test_undefined_cells_render_as_undef_and_serialise_as_null():
+    assert xdf._fmt(float("nan"), 2) == "undef"
+    view = xdf.TableView("t", "", [], [], [[float("nan"), 1.5]], "1/X", True, True)
+    assert view.to_dict()["cells"] == [[None, 1.5]]
