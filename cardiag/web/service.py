@@ -47,11 +47,13 @@ GAUGE_INTERVAL = 0.05
 
 #: What the tuning view samples - the channels a tuner reads off a pull. MAP is
 #: the load axis, timing is the headline value, the trims and intake temp are
-#: what a pull is really being watched for.
+#: what a pull is really being watched for, and the commanded equivalence ratio
+#: is what the AFR analysis reads (so a browser-captured pull can show it, the
+#: same as a CLI log does), where the car answers it.
 TUNING_CHANNELS = [
     "RPM", "INTAKE_PRESSURE", "THROTTLE_POS", "TIMING_ADVANCE", "INTAKE_TEMP",
     "ENGINE_LOAD", "SHORT_FUEL_TRIM_1", "LONG_FUEL_TRIM_1",
-    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2",
+    "SHORT_FUEL_TRIM_2", "LONG_FUEL_TRIM_2", "COMMANDED_EQUIV_RATIO",
 ]
 
 #: Time-aligned sample rows kept for tuning analysis. Larger than the sparkline

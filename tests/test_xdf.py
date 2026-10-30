@@ -170,3 +170,16 @@ def test_undefined_cells_render_as_undef_and_serialise_as_null():
     assert xdf._fmt(float("nan"), 2) == "undef"
     view = xdf.TableView("t", "", [], [], [[float("nan"), 1.5]], "1/X", True, True)
     assert view.to_dict()["cells"] == [[None, 1.5]]
+
+
+def test_malformed_numeric_field_is_rejected_not_silently_zero():
+    # Absent/empty optional attributes keep the default...
+    assert xdf._int(None, 7) == 7
+    assert xdf._int("", 7) == 7
+    # ...valid decimal and hex (with or without 0x) parse...
+    assert xdf._int("0x10") == 16
+    assert xdf._int("1A") == 26
+    # ...but a present, malformed value is an error, not a silent 0 that would
+    # read bin byte 0 as if it were real calibration data.
+    with pytest.raises(xdf.XdfError):
+        xdf._int("0xZZ")

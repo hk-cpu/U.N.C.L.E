@@ -253,16 +253,23 @@ class XdfError(Exception):
 # ---------------------------------------------------------------------------
 
 def _int(value: str | None, default: int = 0) -> int:
-    if value is None or value == "":
+    # A genuinely absent or empty optional attribute falls back to the default.
+    # A present-but-malformed one (a typo in an address, say) is an error, never
+    # a silent 0 - that would read bin byte 0 and pass it off as a real value,
+    # exactly the invent-a-number bug this viewer must not have.
+    if value is None:
         return default
     value = value.strip()
+    if value == "":
+        return default
     try:
         return int(value, 16) if value.lower().startswith("0x") else int(value)
     except ValueError:
-        try:
-            return int(value, 16)
-        except ValueError:
-            return default
+        pass
+    try:
+        return int(value, 16)       # bare hex without the 0x prefix, e.g. "1A"
+    except ValueError:
+        raise XdfError(f"malformed numeric value in the XDF: {value!r}")
 
 
 def _text(element, tag: str, default: str = "") -> str:

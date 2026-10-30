@@ -10,9 +10,15 @@ from collections import deque
 import pytest
 
 from cardiag.web.server import serve
-from cardiag.web.service import ServiceError, VehicleService
+from cardiag.web.service import ServiceError, TUNING_CHANNELS, VehicleService
 
 CHARGER = "sim://?profile=charger-misfire"
+
+
+def test_browser_tuning_captures_commanded_ratio_for_afr():
+    # The AFR analysis reads COMMANDED_EQUIV_RATIO; a browser-captured pull must
+    # sample it too, or the web Tuning tab can never show the AFR window check.
+    assert "COMMANDED_EQUIV_RATIO" in TUNING_CHANNELS
 
 
 # ---------------------------------------------------------------------------
