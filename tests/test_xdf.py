@@ -196,3 +196,14 @@ def test_floating_point_entries_are_refused_not_misdecoded():
     assert emb.is_float is True
     with pytest.raises(xdf.XdfError):
         xdf.read_block(xdf.Definition(), emb, b"\x3f\x80\x00\x00", xdf.Scaling("X"))
+
+
+def test_a_negative_effective_address_is_refused_not_wrapped():
+    # A base-offset subtraction that underflows gives a negative effective
+    # address. data[off:off+n] would then read real bytes from the END of the
+    # bin (Python negative indexing) and present them as a value - here the old
+    # code would have returned byte 27. It must raise instead.
+    definition = xdf.Definition(base_offset=0x100, base_subtract=True)
+    emb = xdf.Embedded(address=0xFB, size_bits=8, rows=1, cols=1, signed=False)
+    with pytest.raises(xdf.XdfError):
+        xdf.read_block(definition, emb, bytes(range(32)), xdf.Scaling("X"))

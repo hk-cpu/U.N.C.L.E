@@ -400,11 +400,15 @@ def read_block(definition: Definition, embedded: Embedded, data: bytes,
         row: list[float | int] = []
         for c in range(max(1, embedded.cols)):
             off = base + r * stride + c * n
-            chunk = data[off:off + n]
-            if len(chunk) != n:
+            # Bounds-check explicitly. A negative offset (e.g. a base-offset
+            # subtraction that underflows) would otherwise slice from the END of
+            # the bin via Python negative indexing and show unrelated bytes as a
+            # value; and off+n past the end is just as wrong.
+            if off < 0 or off + n > len(data):
                 raise XdfError(
-                    f"address 0x{embedded.address:X} runs past the end of the "
-                    f"bin ({len(data)} bytes) - wrong XDF for this file?")
+                    f"address 0x{embedded.address:X} maps outside the bin "
+                    f"({len(data)} bytes) - wrong XDF for this file?")
+            chunk = data[off:off + n]
             raw = int.from_bytes(chunk, order, signed=embedded.signed)
             row.append(scaling.apply(raw))
         grid.append(row)
