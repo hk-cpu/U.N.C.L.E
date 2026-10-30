@@ -168,8 +168,13 @@ class _Parser:
 # The XDF model
 # ---------------------------------------------------------------------------
 
-#: TunerPro mmedtypeflags: bit 0 marks a signed quantity.
+#: TunerPro mmedtypeflags: bit 0 marks a signed quantity. 0x10000 is the
+#: community-standard float flag (IEEE-754). cardiag decodes integers only, so a
+#: float-flagged entry is refused rather than read as an int and shown as a false
+#: value - the float bit is not firmly documented, so guessing a decode would be
+#: worse than saying plainly that cardiag does not handle it.
 _FLAG_SIGNED = 0x01
+_FLAG_FLOAT = 0x10000
 
 
 @dataclass
@@ -182,6 +187,7 @@ class Embedded:
     cols: int
     signed: bool
     row_stride_bits: int = 0        # 0 means rows are contiguous
+    is_float: bool = False          # IEEE-754; cardiag refuses these
 
     @property
     def element_bytes(self) -> int:
@@ -289,6 +295,7 @@ def _embedded(axis_el) -> Embedded | None:
         cols=_int(data.get("mmedcolcount"), 1),
         signed=bool(flags & _FLAG_SIGNED),
         row_stride_bits=_int(data.get("mmedmajorstridebits")),
+        is_float=bool(flags & _FLAG_FLOAT),
     )
 
 
@@ -378,6 +385,11 @@ def _effective_address(definition: Definition, address: int) -> int:
 def read_block(definition: Definition, embedded: Embedded, data: bytes,
                scaling: Scaling, big_endian: bool = True) -> list[list[float | int]]:
     """Decode an embedded block into rows of scaled values."""
+    if embedded.is_float:
+        raise XdfError(
+            "this XDF entry stores IEEE-754 floating-point values, which cardiag "
+            "does not decode - it will not read the bytes as an integer and show "
+            "a false number. View it in TunerPro instead.")
     order = "big" if big_endian else "little"
     n = embedded.element_bytes
     base = _effective_address(definition, embedded.address)

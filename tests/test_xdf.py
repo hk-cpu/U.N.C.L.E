@@ -183,3 +183,16 @@ def test_malformed_numeric_field_is_rejected_not_silently_zero():
     # read bin byte 0 as if it were real calibration data.
     with pytest.raises(xdf.XdfError):
         xdf._int("0xZZ")
+
+
+def test_floating_point_entries_are_refused_not_misdecoded():
+    # A float-flagged (IEEE-754) entry must not be read as an integer and shown
+    # as a plausible-but-false calibration value - cardiag decodes ints only.
+    from xml.etree import ElementTree
+    axis = ElementTree.fromstring(
+        '<XDFAXIS><EMBEDDEDDATA mmedaddress="0x0" mmedelementsizebits="32" '
+        'mmedtypeflags="0x10000"/></XDFAXIS>')
+    emb = xdf._embedded(axis)
+    assert emb.is_float is True
+    with pytest.raises(xdf.XdfError):
+        xdf.read_block(xdf.Definition(), emb, b"\x3f\x80\x00\x00", xdf.Scaling("X"))
