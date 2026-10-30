@@ -622,7 +622,12 @@ def _command_live(args: argparse.Namespace, session: Session) -> int:
     if getattr(args, "tune", False) and not names:
         # The tuner's channel set, minus any this car does not answer, so the
         # log that 'cardiag pull' reads back has load, timing and trims in it.
-        supported = {entry.name for entry in session.live_pids()}
+        # Build the supported set from every advertised PID, not live_pids()
+        # (which is dashboard_order and drops priority-0 PIDs): the commanded
+        # equivalence ratio the AFR analysis needs is one of those, so filtering
+        # on the dashboard set would silently leave it out of the log.
+        supported = {pids.BY_PID[p].name
+                     for p in session.supported_pids if p in pids.BY_PID}
         names = [name for name in tuning_module.LOG_CHANNELS if name in supported]
         if not names:
             return _fail("this car did not advertise any of the tuning channels.")

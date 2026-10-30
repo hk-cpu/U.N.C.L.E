@@ -190,6 +190,19 @@ def test_live_tune_records_the_channels_a_pull_is_read_from(capsys, tmp_path):
     assert code == 0
 
 
+def test_tune_capture_keeps_priority_zero_pids_the_dashboard_drops():
+    # The commanded equivalence ratio (PID 0x44) is priority 0, so dashboard_order
+    # - what Session.live_pids() uses - drops it. A pull's AFR analysis needs it,
+    # so `live --tune` selects from every advertised PID instead; this guards
+    # that seam (the old filter used the dashboard set and silently lost it).
+    from cardiag import pids
+    advertised = {0x0C, 0x44}          # RPM (ranked) + commanded ratio (priority 0)
+    dashboard = {p.name for p in pids.dashboard_order(advertised)}
+    all_names = {pids.BY_PID[p].name for p in advertised if p in pids.BY_PID}
+    assert "COMMANDED_EQUIV_RATIO" not in dashboard      # the old filter dropped it
+    assert "COMMANDED_EQUIV_RATIO" in all_names          # the fix keeps it
+
+
 # ---------------------------------------------------------------------------
 # Loggers
 # ---------------------------------------------------------------------------
